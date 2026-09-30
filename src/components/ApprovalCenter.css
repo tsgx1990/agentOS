@@ -1,0 +1,212 @@
+.approval-center {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-card-gap);
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  padding: calc(var(--space-card-padding) * 1.5);
+  margin: 20px;
+  font-family: var(--font-ui);
+}
+
+.approval-center-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.approval-center-header h2 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.approval-center-header button {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 7px 14px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.approval-center-header button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.approval-center-hint,
+.approval-center-err {
+  font-size: 12px;
+  margin: 0;
+}
+
+.approval-center-hint {
+  color: var(--text-label);
+}
+
+.approval-center-err {
+  color: var(--color-danger);
+}
+
+/* 终审 Important 4：respondStaged 结果摘要——正常汇总用中性色，含权限变化被拒
+   /失败条目时（hasWarning）换警示色，让"点了允许却没真的执行"这一情形显眼。 */
+.approval-center-summary {
+  font-size: 12px;
+  margin: 0;
+  color: var(--text-label);
+}
+
+.approval-center-summary-warn {
+  color: var(--color-danger);
+}
+
+.approval-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.approval-group {
+  border: 1px solid var(--color-panel-divider);
+  border-radius: var(--radius-nav-item);
+  padding: var(--space-card-padding);
+}
+
+.approval-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.approval-group-app {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.approval-group-actions,
+.approval-row-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.approval-group-actions button,
+.approval-row-actions button,
+.approval-rules button.revoke {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 6px 14px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.approval-group-actions button.allow,
+.approval-row-actions button.allow {
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  border-color: var(--color-accent);
+}
+
+.approval-group-actions button.deny,
+.approval-row-actions button.deny,
+.approval-rules button.revoke {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.approval-subgroup {
+  margin-top: 8px;
+}
+
+.approval-subgroup-title {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.approval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.approval-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--color-panel-divider);
+  border-radius: var(--radius-nav-item);
+  padding: 8px 10px;
+}
+
+.approval-row-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.approval-args {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.approval-row-ts {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.approval-row-always {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.approval-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.approval-table th {
+  text-align: left;
+  font-size: 11px;
+  color: var(--text-label);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-panel-divider);
+}
+
+.approval-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-panel-divider);
+  color: var(--text-secondary);
+}
+
+.approval-rules {
+  margin-top: 4px;
+}
+
+.approval-rules h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+}

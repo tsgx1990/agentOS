@@ -1,0 +1,147 @@
+.onboarding-wizard {
+  height: 100vh;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-ground);
+}
+
+.onboarding-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-card-gap);
+  width: 100%;
+  max-width: 440px;
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--card-hover-shadow);
+  padding: calc(var(--space-card-padding) * 2);
+  font-family: var(--font-ui);
+}
+
+.onboarding-orb {
+  width: var(--icon-size);
+  height: var(--icon-size);
+  border-radius: 50%;
+  background: var(--gradient-orb);
+}
+
+.onboarding-card h1 {
+  margin: 4px 0 0;
+  font-size: 20px;
+  color: var(--text-primary);
+}
+
+.onboarding-card h2 {
+  margin: 0;
+  font-size: 17px;
+  color: var(--text-primary);
+}
+
+.onboarding-card > p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.onboarding-card input {
+  display: block;
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 9px 11px;
+  border-radius: var(--radius-nav-item);
+  border: 1px solid var(--color-card-border);
+  background: var(--color-ground);
+  color: var(--text-primary);
+}
+
+.onboarding-error {
+  margin: 0;
+  color: var(--chip-warn-fg);
+  background: var(--chip-warn-bg);
+  padding: 7px 10px;
+  border-radius: var(--radius-nav-item);
+  font-size: 13px;
+}
+
+.onboarding-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.onboarding-actions button {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 8px 18px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.onboarding-actions button.primary {
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  border-color: var(--color-accent);
+}
+
+.onboarding-actions button:disabled {
+  background: var(--text-label);
+  border-color: var(--text-label);
+  cursor: not-allowed;
+}
+
+.onboarding-starter-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-card-gap);
+}
+
+.onboarding-starter-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--color-panel-divider);
+  border-radius: var(--radius-nav-item);
+  padding: var(--space-card-padding);
+}
+
+.onboarding-starter-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.onboarding-starter-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.onboarding-starter-card button {
+  align-self: flex-end;
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-nav-item);
+  padding: 6px 14px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.onboarding-starter-card button.primary {
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  border-color: var(--color-accent);
+}
+
+.onboarding-starter-card button:disabled {
+  background: var(--text-label);
+  border-color: var(--text-label);
+  color: var(--text-on-accent);
+  cursor: not-allowed;
+}

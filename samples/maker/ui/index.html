@@ -1,0 +1,78 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8" />
+<title>应用工坊</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; color: #1c2230; background: #f4f6fa; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.intro { font-size: 13px; color: #8792a6; margin: 0 0 14px; line-height: 1.5; }
+  .steps { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  .step { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: #eef1f7; color: #3a4356; }
+  .step.active { background: #e7f0ff; color: #3b5bdb; font-weight: 600; }
+  ul#log { list-style: none; padding: 0; margin: 0 0 12px; min-height: 40px; }
+  li { background: #fff; border: 1px solid #e6eaf2; border-radius: 9px; padding: 8px 10px; margin: 6px 0; font-size: 13px; }
+  li.empty { color: #96a0b5; border-style: dashed; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; padding: 8px; border: 1px solid #e6eaf2; border-radius: 8px; font-size: 13px; }
+  button { padding: 8px 14px; border: 0; border-radius: 8px; background: #4c6ef5; color: #fff; font-size: 13px; }
+</style></head><body>
+<h1>应用工坊 · Maker</h1>
+<p class="intro">告诉我你想要一个什么样的应用——聊清楚需求后，我会生成一个真实的应用包、在沙盒里预览，再提交给你确认安装。</p>
+<div class="steps">
+  <span class="step" data-step="collecting">收集需求</span>
+  <span class="step" data-step="drafting">生成应用包</span>
+  <span class="step" data-step="previewing">沙盒预览</span>
+  <span class="step" data-step="ready">等待安装确认</span>
+</div>
+<ul id="log"><li class="empty">还没有进展，说说你想要什么应用吧。</li></ul>
+<form id="f"><input id="i" placeholder="例如：帮我做一个记录喝水量的小应用……" autocomplete="off" /><button>发送</button></form>
+<script>
+  const logEl = document.getElementById('log');
+  const steps = Array.from(document.querySelectorAll('.step'));
+  let logItems = [];
+
+  function setStep(name) {
+    steps.forEach((el) => el.classList.toggle('active', el.dataset.step === name));
+  }
+
+  function render(items) {
+    logEl.innerHTML = '';
+    if (!items || !items.length) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.textContent = '还没有进展，说说你想要什么应用吧。';
+      logEl.appendChild(li);
+      return;
+    }
+    items.forEach((text) => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      logEl.appendChild(li);
+    });
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // 首启：拉持久状态（上次会话留下的进展日志），供刷新/重开面板后恢复展示。
+  window.superagent.state.get('log');
+  window.superagent.on('__state__:log', (v) => {
+    logItems = Array.isArray(v) ? v : [];
+    render(logItems);
+  });
+
+  // agent 侧通过 __host_ui_emit__ 推送进展：
+  // event "status_update"，payload { step, text }。
+  // step ∈ collecting | drafting | previewing | ready；text 是给用户看的一句话说明。
+  window.superagent.on('status_update', (p) => {
+    if (!p) return;
+    if (p.step) setStep(p.step);
+    if (p.text) {
+      logItems = logItems.concat([p.text]);
+      render(logItems);
+      window.superagent.state.set('log', logItems); // UI 负责持久化
+    }
+  });
+
+  document.getElementById('f').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const v = document.getElementById('i').value.trim();
+    if (v) { window.superagent.prompt(v); document.getElementById('i').value = ''; }
+  });
+</script></body></html>

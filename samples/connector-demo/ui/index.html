@@ -1,0 +1,65 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8" />
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; color: #1c2230; background: #f4f6fa; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.intro { font-size: 12px; color: #8792a6; margin: 0 0 14px; line-height: 1.5; }
+  .actions { display: flex; gap: 8px; margin-bottom: 14px; }
+  button { padding: 8px 14px; border: 0; border-radius: 8px; background: #4c6ef5; color: #fff; font-size: 13px; }
+  button.secondary { background: #eef1f7; color: #3a4356; }
+  ul#log { list-style: none; padding: 0; margin: 0; }
+  li { background: #fff; border: 1px solid #e6eaf2; border-radius: 9px; padding: 8px 10px; margin: 6px 0; font-size: 13px; }
+  li.empty { color: #96a0b5; border-style: dashed; }
+  li.fail { border-color: #f3a6a6; color: #b3413e; }
+</style></head><body>
+<h1>连接器演示</h1>
+<p class="intro">这个应用声明了 filesystem 连接器的读写权限——点下面按钮，agent 会真的通过连接器读写一份示例文件。</p>
+<div class="actions">
+  <button id="write">写入示例记录</button>
+  <button class="secondary" id="read">读取示例记录</button>
+</div>
+<ul id="log"><li class="empty">还没有操作，点上面的按钮试试。</li></ul>
+<script>
+  const logEl = document.getElementById('log');
+  let items = [];
+
+  function render() {
+    logEl.innerHTML = '';
+    if (!items.length) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.textContent = '还没有操作，点上面的按钮试试。';
+      logEl.appendChild(li);
+      return;
+    }
+    items.forEach((it) => {
+      const li = document.createElement('li');
+      if (!it.ok) li.className = 'fail';
+      li.textContent = `[${it.action === 'write' ? '写入' : '读取'}] ${it.detail}`;
+      logEl.appendChild(li);
+    });
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // 首启：拉持久状态（历史操作记录）。
+  window.superagent.state.get('log');
+  window.superagent.on('__state__:log', (v) => {
+    items = Array.isArray(v) ? v : [];
+    render();
+  });
+
+  // agent 侧通过 __host_ui_emit__ 推送每次操作结果：
+  // event "action_result"，payload { action, ok, detail }。
+  window.superagent.on('action_result', (p) => {
+    if (!p) return;
+    items = items.concat([p]);
+    render();
+    window.superagent.state.set('log', items); // UI 负责持久化
+  });
+
+  document.getElementById('write').addEventListener('click', () => {
+    window.superagent.prompt('写入一条示例记录');
+  });
+  document.getElementById('read').addEventListener('click', () => {
+    window.superagent.prompt('读取示例记录的当前内容');
+  });
+</script></body></html>

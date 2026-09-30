@@ -1,0 +1,7 @@
+# pi 官方发布包的 SHA-256 固定值，每行「哈希  版本  文件名」。
+# scripts/fetch-pi.sh 只接受这里登记过的哈希：发布页上的文件事后被替换时会校验失败。
+# 升级 pi-version.txt 时，把新版本官方 SHA256SUMS 里对应平台的行登记进来再提交。
+c68e3ac4d05b4e282aaab2e6c76f161d3e9e68f19a22e38913cbfaadb6c800f0  0.84.4  pi-darwin-arm64.tar.gz
+7a042d6413065421387001a4986190a1a03186c95a695f4dee0bdc76e60de8f7  0.84.4  pi-darwin-x64.tar.gz
+135580f6b942151646e67b8b866d987d28ce3cff5a497030775ddd29659f943d  0.84.4  pi-linux-arm64.tar.gz
+c2f3c3e6a1850bd87654cc3ca8811013272397c3d042a4e2a64c43ee1b423972  0.84.4  pi-linux-x64.tar.gz

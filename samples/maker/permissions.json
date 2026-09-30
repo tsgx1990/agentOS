@@ -1,0 +1,1 @@
+{ "filesystem": { "write": ["$APP_DATA"] }, "skills": { "allow": true } }

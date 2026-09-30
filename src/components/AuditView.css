@@ -1,0 +1,80 @@
+.audit-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-card-gap);
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  padding: calc(var(--space-card-padding) * 1.5);
+  margin: 20px;
+  font-family: var(--font-ui);
+}
+
+.audit-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.audit-view-header h2 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.audit-view-header button {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 7px 14px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.audit-view-header button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.audit-view-hint {
+  font-size: 12px;
+  color: var(--text-label);
+  margin: 0;
+}
+
+.audit-view-err {
+  color: var(--color-danger);
+  font-size: 12px;
+  margin: 0;
+}
+
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.audit-table th {
+  text-align: left;
+  font-size: 11px;
+  color: var(--text-label);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-panel-divider);
+}
+
+.audit-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-panel-divider);
+  color: var(--text-secondary);
+}
+
+.audit-cell-ts {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}

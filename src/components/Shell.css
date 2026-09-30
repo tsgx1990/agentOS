@@ -1,0 +1,37 @@
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-l) 1fr var(--rail-r);
+  height: 100vh;
+  background: var(--color-ground);
+}
+
+/* has_api_key 检测中的过渡态（Task12）：结果一到即被 shell 或 OnboardingWizard 取代 */
+.shell-loading {
+  height: 100vh;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-ground);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.shell-center {
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* C4a §3：≤720px 塌为单列，隐藏左导航与右栏 */
+@media (max-width: 720px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+  .shell > .nav-rail,
+  .shell > .session-panel {
+    display: none;
+  }
+}

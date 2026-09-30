@@ -1,0 +1,19 @@
+{
+  "name": "@third/demo",
+  "version": "1.0.0",
+  "keywords": ["pi-package", "superagent-app"],
+  "pi": {
+    "extensions": ["agent/extensions"]
+  },
+  "engines": {
+    "superagent-host": ">=1.0.0, <2.0.0"
+  },
+  "superagent": {
+    "schemaVersion": 1,
+    "displayName": "第三方演示",
+    "category": "info",
+    "ui": "ui/index.html",
+    "permissions": "permissions.json",
+    "persona": "agent/persona.md"
+  }
+}

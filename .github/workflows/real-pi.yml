@@ -1,0 +1,55 @@
+# 真实 pi / node 的 `#[ignore]` 套件：需要从 GitHub Releases 下载 pi 官方独立二进制，
+# 依赖外网，所以不放进 PR 门禁；手动触发或每周日跑一次，用来发现 pi 升级带来的回归。
+name: real-pi
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 0" # 每周日 03:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  ignored-suites:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            src-tauri/hosttools/package-lock.json
+
+      # real_mcp_transport_roundtrip_it 需要仓库根的 esbuild（npm ci 产物）与 node
+      - run: npm ci --no-audit --no-fund
+
+      - name: 拉取 pi 官方独立二进制（版本取 src-tauri/pi-version.txt，SHA256 校验）
+        run: ./scripts/fetch-pi.sh
+
+      - name: 真实 pi 套件（沙盒逃逸 / --tools 白名单 / node 进沙盒 / MCP 传输往返 / 技能可见性）
+        working-directory: src-tauri
+        env:
+          SUPERAGENT_PI_BIN: ${{ github.workspace }}/src-tauri/binaries/pi/pi
+        run: |
+          cargo test \
+            --test real_pi_bash_escape_it \
+            --test real_pi_tools_allowlist_it \
+            --test sandbox_startup_it \
+            --test real_mcp_transport_roundtrip_it \
+            --test real_pi_skills_visibility_it \
+            -- --ignored

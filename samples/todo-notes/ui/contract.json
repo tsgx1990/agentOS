@@ -1,0 +1,2 @@
+{ "emits": { "items_update": { "items": [{ "text": "string", "done": "boolean" }] } },
+  "commands": {} }

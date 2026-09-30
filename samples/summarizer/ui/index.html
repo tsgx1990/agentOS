@@ -1,0 +1,50 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8" />
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; color: #1c2230; background: #f4f6fa; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.intro { font-size: 12px; color: #8792a6; margin: 0 0 14px; line-height: 1.5; }
+  textarea { width: 100%; box-sizing: border-box; height: 90px; padding: 8px 10px; border: 1px solid #d4dae6; border-radius: 8px; font-size: 13px; resize: vertical; }
+  button { margin-top: 8px; padding: 8px 14px; border: 0; border-radius: 8px; background: #4c6ef5; color: #fff; font-size: 13px; }
+  .card { background: #fff; border: 1px solid #e6eaf2; border-radius: 9px; padding: 10px 12px; margin: 10px 0 0; font-size: 13px; }
+  .card.empty { color: #96a0b5; border-style: dashed; }
+  ol { margin: 0; padding-left: 18px; }
+  li { margin: 3px 0; }
+</style></head><body>
+<h1>精简器</h1>
+<p class="intro">把一段文本压缩成 3 条要点。既可以自己用，也会被别的应用（如「研究员」）通过互联调用。</p>
+<textarea id="src" placeholder="粘贴要精简的文本…"></textarea>
+<button id="go">精简成 3 条</button>
+<div id="out"><div class="card empty">还没有结果。</div></div>
+<script>
+  const outEl = document.getElementById('out');
+
+  function render(points) {
+    outEl.innerHTML = '';
+    if (!Array.isArray(points) || !points.length) {
+      const d = document.createElement('div');
+      d.className = 'card empty';
+      d.textContent = '还没有结果。';
+      outEl.appendChild(d);
+      return;
+    }
+    const card = document.createElement('div');
+    card.className = 'card';
+    const ol = document.createElement('ol');
+    points.forEach((p) => {
+      const li = document.createElement('li');
+      li.textContent = p;
+      ol.appendChild(li);
+    });
+    card.appendChild(ol);
+    outEl.appendChild(card);
+  }
+
+  window.superagent.on('summary_result', (p) => {
+    if (p && Array.isArray(p.points)) render(p.points);
+  });
+
+  document.getElementById('go').addEventListener('click', () => {
+    const src = document.getElementById('src').value.trim();
+    if (src) window.superagent.prompt('把这段文本精简成 3 条要点：\n' + src);
+  });
+</script></body></html>

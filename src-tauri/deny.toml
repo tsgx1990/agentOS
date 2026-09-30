@@ -1,0 +1,46 @@
+# cargo-deny 配置：依赖的许可证白名单、已知漏洞与来源检查。
+# 运行：cd src-tauri && cargo deny check
+# 引入新依赖后如果这里报错，先确认其许可证与 Apache-2.0 兼容再加进白名单；GPL 家族不接受。
+
+[graph]
+# 只支持 macOS，别的平台的依赖不进发行物，不参与检查。
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+all-features = false
+
+[licenses]
+# SPDX 白名单：全部是宽松许可证，外加 MPL-2.0（文件级弱 copyleft，不传染本项目代码）。
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "Unlicense",
+  "Unicode-3.0",
+  "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[advisories]
+# 任何已知漏洞、已撤回（yanked）的版本都算失败；确需豁免时在 ignore 里逐条写明理由。
+yanked = "deny"
+ignore = [
+  # rust-unic 系列已停止维护（不是漏洞）。它们是 tauri-utils → urlpattern 的传递依赖，
+  # 上游没有可升级的替代版本；等 tauri 换掉 urlpattern 的这条依赖后删除这五条。
+  { id = "RUSTSEC-2025-0075", reason = "unic-char-range：tauri-utils 的传递依赖，上游无替代" },
+  { id = "RUSTSEC-2025-0080", reason = "unic-common：同上" },
+  { id = "RUSTSEC-2025-0081", reason = "unic-char-property：同上" },
+  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version：同上" },
+  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident：同上" },
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

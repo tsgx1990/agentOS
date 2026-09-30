@@ -1,0 +1,7 @@
+{
+  "connectors": [{ "category": "filesystem", "access": "readwrite" }],
+  "system": { "schedule": true },
+  "scheduledTasks": [
+    { "id": "notes-digest", "cron": "0 8 * * *", "prompt": "读取笔记目录并生成今日摘要" }
+  ]
+}

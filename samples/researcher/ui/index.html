@@ -1,0 +1,65 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8" />
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; color: #1c2230; background: #f4f6fa; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.intro { font-size: 12px; color: #8792a6; margin: 0 0 14px; line-height: 1.5; }
+  .row { display: flex; gap: 8px; margin-bottom: 14px; }
+  input { flex: 1; padding: 8px 10px; border: 1px solid #d4dae6; border-radius: 8px; font-size: 13px; }
+  button { padding: 8px 14px; border: 0; border-radius: 8px; background: #4c6ef5; color: #fff; font-size: 13px; }
+  .card { background: #fff; border: 1px solid #e6eaf2; border-radius: 9px; padding: 10px 12px; margin: 6px 0; font-size: 13px; }
+  .card.empty { color: #96a0b5; border-style: dashed; }
+  .topic { font-weight: 600; margin-bottom: 6px; }
+  ol { margin: 0; padding-left: 18px; }
+  li { margin: 3px 0; }
+</style></head><body>
+<h1>研究员</h1>
+<p class="intro">给一个主题，研究员整理原始要点后，会把它交给「精简器」应用压缩成 3 条精华——演示两个应用协作完成一个任务。</p>
+<div class="row">
+  <input id="topic" placeholder="例如：大语言模型的能耗问题" />
+  <button id="go">研究并精简</button>
+</div>
+<div id="out"><div class="card empty">还没有结果，输入主题点「研究并精简」。</div></div>
+<script>
+  const outEl = document.getElementById('out');
+
+  function render(r) {
+    outEl.innerHTML = '';
+    if (!r || !Array.isArray(r.points)) {
+      const d = document.createElement('div');
+      d.className = 'card empty';
+      d.textContent = '还没有结果，输入主题点「研究并精简」。';
+      outEl.appendChild(d);
+      return;
+    }
+    const card = document.createElement('div');
+    card.className = 'card';
+    const t = document.createElement('div');
+    t.className = 'topic';
+    t.textContent = r.topic || '结果';
+    card.appendChild(t);
+    const ol = document.createElement('ol');
+    r.points.forEach((p) => {
+      const li = document.createElement('li');
+      li.textContent = p;
+      ol.appendChild(li);
+    });
+    card.appendChild(ol);
+    outEl.appendChild(card);
+  }
+
+  window.superagent.state.get('last');
+  window.superagent.on('__state__:last', (v) => render(v));
+
+  // 研究员经 __host_call_agent__ 调精简器拿到 3 条要点后，通过 __host_ui_emit__
+  // 推送 event "research_result"，payload { topic, points }。
+  window.superagent.on('research_result', (p) => {
+    if (!p) return;
+    render(p);
+    window.superagent.state.set('last', p);
+  });
+
+  document.getElementById('go').addEventListener('click', () => {
+    const topic = document.getElementById('topic').value.trim();
+    if (topic) window.superagent.prompt('研究这个主题并精简成 3 条要点：' + topic);
+  });
+</script></body></html>

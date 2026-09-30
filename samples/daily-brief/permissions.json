@@ -1,0 +1,9 @@
+{
+  "filesystem": { "write": ["$APP_DATA"] },
+  "connectors": [{ "category": "filesystem", "access": "read" }],
+  "system": { "schedule": true, "notifications": true },
+  "scheduledTasks": [
+    { "id": "morning-brief", "cron": "0 8 * * *",
+      "prompt": "读取本地笔记/日程作为素材，整理一份简短的晨间简报（今日待办、重要日程、一句话总结），通过 __host_notify__ 发送一条标题为「晨间简报」的通知" }
+  ]
+}

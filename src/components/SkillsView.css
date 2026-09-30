@@ -1,0 +1,225 @@
+.skills-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 20px;
+  overflow-y: auto;
+  box-sizing: border-box;
+  gap: 18px;
+  font-family: var(--font-ui);
+  color: var(--text-primary);
+}
+
+.skills-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.skills-header h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.skills-section h3 {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+  font-weight: 500;
+}
+
+.skills-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+.skills-err {
+  color: var(--color-danger);
+  font-size: 12px;
+  margin: 4px 0;
+}
+
+.skills-installed-list,
+.skills-market-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skills-installed-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.skill-card {
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-card-padding);
+  background: var(--color-card-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skill-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skill-card-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.skill-trust-badge {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--chip-idle-bg);
+  color: var(--chip-idle-fg);
+}
+
+.skill-trust-badge.trusted {
+  background: var(--chip-ready-bg);
+  color: var(--chip-ready-fg);
+}
+
+.skill-trust-badge.untrusted {
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+}
+
+.skill-source-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--color-card-border);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.skill-scripts-tag {
+  font-size: 11px;
+  color: var(--chip-run-fg);
+  background: var(--chip-run-bg);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.skill-card-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.skill-card-findings {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.skill-grant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--color-panel-divider);
+  padding-top: 6px;
+}
+
+.skill-grant-title {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.skill-grant-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.skill-grant-app {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  cursor: pointer;
+}
+
+.skill-grant-enabled-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  cursor: pointer;
+}
+
+.skill-grant-enabled-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.skill-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.skill-card-actions button {
+  padding: 6px 14px;
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-nav-item);
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.skill-card-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.skill-card-actions button.danger {
+  background: var(--color-card-bg);
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.skills-import-row {
+  display: flex;
+  gap: 8px;
+}
+
+.skills-import-row input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-nav-item);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.skills-import-row button {
+  padding: 6px 14px;
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-nav-item);
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.skills-import-row button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

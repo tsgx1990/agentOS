@@ -1,0 +1,25 @@
+.publish-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.publish-button button {
+  padding: 4px 12px;
+  border: 1px solid var(--border, #e6eaf2);
+  border-radius: 7px;
+  background: var(--surface, #fff);
+  color: var(--text, #1c2230);
+  font-size: 12px;
+}
+
+.publish-button button:disabled {
+  opacity: 0.6;
+}
+
+.publish-status {
+  font-size: 11px;
+  color: var(--text-muted, #6b7688);
+  max-width: 360px;
+  line-height: 1.4;
+}

@@ -1,0 +1,126 @@
+.market-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 20px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.market-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.market-header h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.market-hint {
+  color: var(--text-muted, #8792a6);
+  font-size: 13px;
+}
+
+.market-err {
+  color: #b3413e;
+  font-size: 13px;
+}
+
+.market-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.market-card {
+  border: 1px solid var(--border, #e6eaf2);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--surface, #fff);
+}
+
+.market-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.market-card-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.market-card-cat {
+  font-size: 11px;
+  color: var(--text-muted, #8792a6);
+  border: 1px solid var(--border, #e6eaf2);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.market-card-skill-tag {
+  font-size: 11px;
+  color: var(--chip-ready-fg);
+  background: var(--chip-ready-bg);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.market-card-desc {
+  font-size: 12px;
+  color: var(--text-muted, #6b7688);
+  line-height: 1.5;
+  margin: 4px 0 8px;
+}
+
+.market-perms {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.market-perms li {
+  font-size: 11px;
+  color: #5a6577;
+  background: #f1f4fa;
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.market-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.market-card-actions button {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: #4c6ef5;
+  color: #fff;
+  font-size: 13px;
+}
+
+.market-card-actions button:disabled {
+  opacity: 0.6;
+}
+
+.market-card-status {
+  font-size: 12px;
+  color: #b3413e;
+}
+
+.market-card-status-hint {
+  color: var(--chip-warn-fg);
+}

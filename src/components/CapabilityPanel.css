@@ -1,0 +1,78 @@
+.cap-panel {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}
+
+.cap-panel-hint {
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin: 0 0 8px;
+}
+
+.cap-panel-empty {
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.cap-panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.cap-panel-item {
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.cap-panel-human {
+  color: var(--text-primary);
+}
+
+.cap-panel-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.cap-chip {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--chip-idle-bg);
+  color: var(--chip-idle-fg);
+}
+
+.cap-chip-sandbox {
+  background: var(--chip-ready-bg);
+  color: var(--chip-ready-fg);
+}
+
+.cap-chip-host_method {
+  background: var(--chip-run-bg);
+  color: var(--chip-run-fg);
+}
+
+.cap-panel-error {
+  margin-top: 6px;
+  color: var(--color-danger);
+  font-size: 12px;
+}
+
+.cap-panel-tools {
+  margin-top: 6px;
+  color: var(--text-muted);
+}
+
+.cap-panel-tools code {
+  font-size: 11px;
+  word-break: break-all;
+}

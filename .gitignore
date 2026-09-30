@@ -1,0 +1,42 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Rust / Tauri build artifacts
+# (src-tauri/.gitignore also ignores /target/ and /gen/schemas relative to src-tauri/;
+# this is kept for redundancy/clarity from the repo root)
+src-tauri/target
+
+# superpowers SDD scaffolding (per-worktree scratch: progress ledger + task reports/briefs) — not source
+.superpowers/
+
+# 本地 git worktree（开发约定：建在 <repo>/.claude/worktree/<名字>，不入库）
+.claude/worktree/
+.claude/worktrees/
+
+# pi 官方独立二进制（scripts/fetch-pi.sh 下载，随包资源分发，不入库）
+src-tauri/binaries/pi/*
+
+# 允许空目录占位，让 tauri-build 的 bundle.resources 校验在未拉取二进制时也能通过
+!src-tauri/binaries/pi/.gitkeep

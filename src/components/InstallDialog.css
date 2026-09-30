@@ -1,0 +1,117 @@
+.install-dialog,
+.uninstall-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-card-gap);
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  padding: calc(var(--space-card-padding) * 1.5);
+  font-family: var(--font-ui);
+  max-width: 420px;
+}
+
+.install-dialog h2,
+.uninstall-dialog h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.install-dialog input[type="text"],
+.install-dialog input:not([type]) {
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-nav-item);
+  padding: 8px 10px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--color-ground);
+}
+
+.install-dialog button,
+.uninstall-dialog button {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 7px 14px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.install-dialog button:disabled,
+.uninstall-dialog button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.install-dialog button.primary {
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  border-color: var(--color-accent);
+}
+
+.install-err {
+  color: var(--color-danger);
+  font-size: 12px;
+  margin: 0;
+}
+
+.install-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--color-panel-divider);
+  padding-top: var(--space-card-gap);
+}
+
+.install-name {
+  font-size: 14px;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.install-name span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.install-perm-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.install-preview ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.install-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.uninstall-dialog label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.uninstall-dialog > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}

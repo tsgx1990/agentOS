@@ -1,0 +1,87 @@
+.app-frame-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+}
+
+.app-frame-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px var(--space-card-padding);
+  background: var(--color-card-bg);
+  border-bottom: 1px solid var(--color-panel-divider);
+  flex: none;
+}
+
+.app-frame-back,
+.app-frame-caps,
+.app-frame-uninstall {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 6px 12px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.app-frame-back:hover,
+.app-frame-caps:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.app-frame-uninstall:hover {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.app-frame-caps-badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 14px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.app-frame-caps-pop {
+  position: absolute;
+  top: 44px;
+  right: var(--space-card-padding);
+  z-index: 10;
+  width: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px;
+}
+
+.app-frame-caps-loading {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 0;
+}
+
+.app-frame {
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  background: var(--color-card-bg);
+}

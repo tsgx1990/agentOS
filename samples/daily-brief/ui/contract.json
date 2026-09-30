@@ -1,0 +1,2 @@
+{ "emits": { "brief_update": { "text": "string", "time": "string" } },
+  "commands": {} }

@@ -1,0 +1,2 @@
+{ "emits": { "action_result": { "action": "write|read", "ok": "boolean", "detail": "string" } },
+  "commands": {} }

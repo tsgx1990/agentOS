@@ -1,0 +1,70 @@
+[package]
+name = "super-agent-os"
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "super_agent_os"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "1"
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros", "time", "net"] }
+thiserror = "1"
+# 平台原生后端：不开 feature 时 keyring v3 会静默退化为非持久化 mock 存储（进程内内存），
+# 表面能编译/能跑单测，但重启进程后 has_api_key 会读不到——彻底违背"存 OS 钥匙串"的需求。
+# apple-native → macOS/iOS 走 Keychain（security-framework）；windows-native → Windows 走 Credential Manager。
+# 两个 feature 依赖的平台 crate（security-framework / windows-sys+byteorder）在 keyring 自己的
+# Cargo.toml 里已按 target cfg 分别声明为 optional，所以在 macOS 构建上同时开 apple-native +
+# windows-native 只会真正拉入 security-framework，windows-sys 因 target 不匹配根本不会被编译，
+# 是安全的跨平台预留写法。Linux 的 secret-service 后端本任务不开（会引入系统级 D-Bus 依赖，
+# 且不影响当前 macOS 构建），留作后续任务的 follow-up。
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+# 轻量 cron 表达式解析 + 下次触发时间计算（Task 11：调度器到期判定）。
+# 只解析/计算 next fire，不含守护进程/调度循环——那部分仍由本项目自己的
+# tokio 定时器负责（见 §17 无守护进程约束）。
+cron = "0.12"
+chrono = { version = "0.4" }
+# P6-A：Capability trait 的 async 方法（handle）用 async-trait 做类型擦除；标准目录（下载/文稿…）用 dirs。
+async-trait = "0.1"
+dirs = "6"
+# P6-B：技能子系统。gray_matter 解 SKILL.md 的 YAML frontmatter（MIT）；
+# regex 做危险模式静态扫描（curl|sh、写 ~/.ssh 等，MIT/Apache-2.0），已在
+# Cargo.lock 里作传递依赖（tauri 链路），这里升级成直接依赖。
+gray_matter = "0.3"
+regex = "1"
+# validate_name 要求"先 NFKC 归一化再判"（Agent Skills 标准规则，见
+# docs/research/2026-09-02-agent-skills-rules.md）。icu_normalizer 同样已在
+# Cargo.lock 里作传递依赖（tauri -> tao -> url -> idna -> idna_adapter 链路），
+# license Unicode-3.0（OSI 批准的宽松许可，非 GPL 家族），这里升级成直接依赖，
+# 不新增依赖树、不必自造 NFKC 归一化表（不重复造轮子）。
+icu_normalizer = "2"
+# P6-B Task 6：市场 HTTP 索引拉取 + 技能 zip 下载安装。reqwest 走 rustls（不依赖
+# 系统 OpenSSL）+ blocking（`blocking::Client` 内部自带独立后台线程/运行时，
+# 不会在已经跑着 tokio 的调用点触发"嵌套 runtime"panic，可以直接在 Tauri 同步
+# 命令里调用，见 market.rs 顶部文档）；`json` feature 暂不用但保留供未来市场
+# 索引改走结构化 API 用。license MIT/Apache-2.0（双许可，OSI 批准）。
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking"] }
+# zip 解包（skill_market_install 下载的技能包）。license MIT。
+zip = "2"
+# sha256 校验下载的技能 zip（P6-B 裁决 4：市场条目声明 sha256，装前必须核验）。
+# license MIT/Apache-2.0（双许可）。已在 Cargo.lock 里作 tauri 链路的传递依赖，
+# 这里升级成直接依赖，不新增依赖树。
+sha2 = "0.10"
+# `market.rs::check_remote_url` 解析 URL 的 host 做 https-only 校验（回环地址例外）。
+# 手写字符串前缀匹配判断 host 对 userinfo（`http://evil@127.0.0.1/`）、IPv6 方括号、
+# 大小写这些边角情形容易判错，用标准 URL 解析器更可靠（不重复造轮子）。
+# 同 icu_normalizer：已在 Cargo.lock 里作 tauri -> tao -> url 链路的传递
+# 依赖，这里升级成直接依赖，不新增依赖树。license MIT/Apache-2.0（双许可）。
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"

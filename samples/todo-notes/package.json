@@ -1,0 +1,12 @@
+{
+  "name": "@superagent/todo-notes", "version": "1.0.0",
+  "keywords": ["pi-package", "superagent-app"],
+  "pi": { "prompts": ["agent/prompts"] },
+  "engines": { "superagent-host": ">=1.0.0, <2.0.0" },
+  "superagent": {
+    "schemaVersion": 1, "displayName": "待办便签", "category": "life",
+    "ui": "ui/index.html", "permissions": "permissions.json",
+    "persona": "agent/persona.md", "model": "claude-sonnet-5",
+    "tools": ["__host_ui_emit__"], "subagents": []
+  }
+}

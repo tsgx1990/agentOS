@@ -1,0 +1,16 @@
+{
+  "name": "notes-reader",
+  "version": "1.0.0",
+  "keywords": ["pi-package", "superagent-app"],
+  "engines": {
+    "superagent-host": ">=1.0.0, <2.0.0"
+  },
+  "superagent": {
+    "schemaVersion": 1,
+    "displayName": "笔记查看器",
+    "category": "life",
+    "ui": "ui/index.html",
+    "permissions": "permissions.json",
+    "persona": "agent/persona.md"
+  }
+}

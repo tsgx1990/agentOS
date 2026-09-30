@@ -1,0 +1,41 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8" />
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; color: #1c2230; background: #f4f6fa; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.time { font-size: 12px; color: #8792a6; margin: 0 0 12px; }
+  .brief { background: #fff; border: 1px solid #e6eaf2; border-radius: 9px; padding: 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; min-height: 60px; }
+  .brief.empty { color: #96a0b5; }
+  button { margin-top: 12px; padding: 8px 14px; border: 0; border-radius: 8px; background: #4c6ef5; color: #fff; font-size: 13px; }
+</style></head><body>
+<h1>每日简报</h1>
+<p class="time" id="time">还没有生成过简报</p>
+<div class="brief empty" id="brief">每天 08:00 会自动生成一份，也可以点下面按钮立即生成一份。</div>
+<button id="refresh">立即生成一份简报</button>
+<script>
+  const briefEl = document.getElementById('brief');
+  const timeEl = document.getElementById('time');
+
+  function render(text, time) {
+    briefEl.textContent = text || '还没有内容';
+    briefEl.classList.toggle('empty', !text);
+    if (time) timeEl.textContent = time;
+  }
+
+  // 首启：拉持久状态（上次生成的简报），供刷新/重开面板后恢复展示。
+  window.superagent.state.get('brief');
+  window.superagent.on('__state__:brief', (v) => {
+    if (v) render(v.text, v.time);
+  });
+
+  // agent 侧通过 __host_ui_emit__ 推送新简报：
+  // event "brief_update"，payload { text, time }。
+  window.superagent.on('brief_update', (p) => {
+    if (!p) return;
+    render(p.text, p.time);
+    window.superagent.state.set('brief', p); // UI 负责持久化
+  });
+
+  document.getElementById('refresh').addEventListener('click', () => {
+    window.superagent.prompt('生成一份现在的简报');
+  });
+</script></body></html>

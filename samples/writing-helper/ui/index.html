@@ -1,0 +1,40 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8" />
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; color: #1c2230; background: #f4f6fa; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.intro { font-size: 12px; color: #8792a6; margin: 0 0 12px; }
+  .draft { background: #fff; border: 1px solid #e6eaf2; border-radius: 9px; padding: 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; min-height: 100px; margin-bottom: 12px; }
+  .draft.empty { color: #96a0b5; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; padding: 8px; border: 1px solid #e6eaf2; border-radius: 8px; font-size: 13px; }
+  button { padding: 8px 14px; border: 0; border-radius: 8px; background: #4c6ef5; color: #fff; font-size: 13px; }
+</style></head><body>
+<h1>写作助手</h1>
+<p class="intro">说说你想写什么、语气如何，我来起草，随时可以让我改。</p>
+<div class="draft empty" id="draft">还没有草稿，告诉我你想写什么吧。</div>
+<form id="f"><input id="i" placeholder="例如：帮我写一段产品介绍，语气轻松一点……" autocomplete="off" /><button>发送</button></form>
+<script>
+  const draftEl = document.getElementById('draft');
+
+  function render(text) {
+    draftEl.textContent = text || '还没有草稿，告诉我你想写什么吧。';
+    draftEl.classList.toggle('empty', !text);
+  }
+
+  // 首启：拉持久状态（上次会话留下的草稿）。
+  window.superagent.state.get('draft');
+  window.superagent.on('__state__:draft', (v) => render(v));
+
+  // agent 侧通过 __host_ui_emit__ 推送草稿：event "draft_update"，payload { text }。
+  window.superagent.on('draft_update', (p) => {
+    const text = (p && p.text) || '';
+    render(text);
+    window.superagent.state.set('draft', text); // UI 负责持久化
+  });
+
+  document.getElementById('f').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const v = document.getElementById('i').value.trim();
+    if (v) { window.superagent.prompt(v); document.getElementById('i').value = ''; }
+  });
+</script></body></html>

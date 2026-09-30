@@ -1,0 +1,157 @@
+.connector-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-card-gap);
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  padding: calc(var(--space-card-padding) * 1.5);
+  margin: 20px;
+  font-family: var(--font-ui);
+}
+
+.connector-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.connector-settings-header h2 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.connector-settings-header button {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 7px 14px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.connector-settings-header button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.connector-hint,
+.connector-err {
+  font-size: 12px;
+  margin: 0;
+}
+
+.connector-hint {
+  color: var(--text-label);
+}
+
+.connector-err {
+  color: var(--color-danger);
+}
+
+.connector-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.connector-table th {
+  text-align: left;
+  font-size: 11px;
+  color: var(--text-label);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-panel-divider);
+}
+
+.connector-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-panel-divider);
+  color: var(--text-secondary);
+  vertical-align: top;
+}
+
+.connector-table td.connector-cell-id {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.connector-table button {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 4px 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--color-danger);
+  cursor: pointer;
+}
+
+.connector-table button:hover {
+  border-color: var(--color-danger);
+}
+
+.connector-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--color-panel-divider);
+  padding-top: var(--space-card-gap);
+}
+
+.connector-form-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.connector-form-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.connector-form input,
+.connector-form textarea {
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-nav-item);
+  padding: 8px 10px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--color-ground);
+  flex: 1;
+  min-width: 160px;
+}
+
+.connector-form textarea {
+  resize: vertical;
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.connector-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.connector-form-actions button {
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-nav-item);
+  padding: 8px 16px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.connector-form-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

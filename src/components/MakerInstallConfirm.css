@@ -1,0 +1,93 @@
+.maker-install-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-card-gap);
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  padding: calc(var(--space-card-padding) * 1.5);
+  font-family: var(--font-ui);
+}
+
+.maker-install-confirm h3 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.maker-install-err {
+  color: var(--color-danger);
+  font-size: 12px;
+  margin: 0;
+}
+
+.maker-install-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.maker-install-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--color-panel-divider);
+  border-radius: var(--radius-nav-item);
+  padding: var(--space-card-padding);
+}
+
+.maker-install-name {
+  font-size: 14px;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.maker-install-request-line {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.maker-install-row ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.maker-install-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.maker-install-actions button {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 6px 14px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.maker-install-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.maker-install-actions button.primary {
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  border-color: var(--color-accent);
+}
+
+.maker-install-actions button.deny {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}

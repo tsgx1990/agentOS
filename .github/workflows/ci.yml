@@ -1,0 +1,48 @@
+# 主门禁：与本地 scripts/ci-local.sh 完全同一份步骤（文本检查 → fmt → clippy -D warnings →
+# cargo test → tsc → vitest → vite build）。工作流本身只负责装工具链与缓存。
+# 第三方 action 一律固定到提交号，升级时连同注释里的版本一起改。
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+# GITHUB_TOKEN 最小权限：门禁只读仓库，不写任何东西。
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    # macOS 是唯一受支持的目标平台（沙盒依赖 sandbox-exec，钥匙串依赖 Keychain）。
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            src-tauri/hosttools/package-lock.json
+
+      - name: 门禁（与本地 scripts/ci-local.sh 同一份）
+        run: ./scripts/ci-local.sh

@@ -1,0 +1,167 @@
+.notification-center {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-card-gap);
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  padding: calc(var(--space-card-padding) * 1.5);
+  margin: 20px;
+  font-family: var(--font-ui);
+}
+
+.notification-center-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notification-center-header h2 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.notification-center-header button {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 7px 14px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.notification-center-header button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.notification-hint,
+.notification-err {
+  font-size: 12px;
+  margin: 0;
+}
+
+.notification-hint {
+  color: var(--text-label);
+}
+
+.notification-err {
+  color: var(--color-danger);
+}
+
+.notification-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notification-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--color-panel-divider);
+  border-radius: var(--radius-nav-item);
+  padding: var(--space-card-padding);
+}
+
+.notification-row.acked {
+  opacity: 0.6;
+}
+
+.notification-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.notification-ts {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.notification-app {
+  color: var(--text-secondary);
+}
+
+.notification-kind {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  margin-left: auto;
+}
+
+.notification-kind-task_result {
+  background: var(--chip-ready-bg);
+  color: var(--chip-ready-fg);
+}
+
+.notification-kind-confirm_request {
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+}
+
+.notification-kind-update {
+  background: var(--chip-run-bg);
+  color: var(--chip-run-fg);
+}
+
+.notification-title {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.notification-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.notification-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.notification-actions button {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  border-radius: var(--radius-nav-item);
+  padding: 6px 14px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.notification-actions button.allow {
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  border-color: var(--color-accent);
+}
+
+.notification-actions button.always-allow {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.notification-actions button.deny {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.notification-actions button.goto-approvals {
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  border-color: var(--color-accent);
+}
+
+.notification-actions button.ack {
+  color: var(--text-secondary);
+}

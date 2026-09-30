@@ -1,0 +1,33 @@
+Super Agent OS
+Copyright 2026 The Super Agent OS Authors
+
+This product includes software developed by the Super Agent OS authors,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party attributions
+------------------------
+
+* The SKILL.md frontmatter and name/description validation rules in
+  src-tauri/src/skills.rs are ported from "skills-ref", the reference
+  implementation of the Agent Skills specification
+  (https://github.com/agentskills/agentskills), licensed under the
+  Apache License, Version 2.0.
+
+* The base Seatbelt sandbox policy (BASE_PROFILE) in src-tauri/src/sandbox.rs
+  is derived from seatbelt_base_policy.sbpl in OpenAI Codex
+  (https://github.com/openai/codex), Copyright 2025 OpenAI, licensed under
+  the Apache License, Version 2.0. It has been trimmed and modified for this
+  project. The upstream file notes that it is in turn inspired by the
+  Chromium project's macOS sandbox policy.
+
+* The application icons under src-tauri/icons/ are the default icons
+  shipped with the Tauri project template (https://github.com/tauri-apps/tauri,
+  MIT OR Apache-2.0). public/vite.svg comes from the Vite project template
+  (https://github.com/vitejs/vite, MIT).
+
+* pi (https://github.com/earendil-works/pi, MIT) is NOT part of this
+  repository. scripts/fetch-pi.sh downloads its official standalone binary
+  at build time; packaged builds bundle that binary under its own license.
+
+Dependencies declared in src-tauri/Cargo.toml and the package.json files are
+not vendored here and remain under their respective licenses.

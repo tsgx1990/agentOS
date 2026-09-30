@@ -1,0 +1,2 @@
+{ "emits": { "research_result": { "topic": "string", "points": "string[]" } },
+  "commands": {} }

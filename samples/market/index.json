@@ -1,0 +1,51 @@
+{
+  "entries": [
+    {
+      "name": "@superagent/researcher",
+      "display_name": "研究员",
+      "version": "1.0.0",
+      "category": "automation",
+      "description": "就一个主题整理原始要点，再交给「精简器」压缩成 3 条精华——演示两个应用协作。",
+      "source": "researcher",
+      "permissions": ["调用其他应用：@superagent/summarizer"]
+    },
+    {
+      "name": "@superagent/summarizer",
+      "display_name": "精简器",
+      "version": "1.0.0",
+      "category": "automation",
+      "description": "把一段文本压缩成 3 条最关键的要点。",
+      "source": "summarizer",
+      "permissions": ["仅在自己的数据区内活动，无额外权限"]
+    },
+    {
+      "name": "@superagent/daily-brief",
+      "display_name": "每日简报",
+      "version": "1.0.0",
+      "category": "info",
+      "description": "每天定时整理一份简报，素材来自你授权的只读文件。",
+      "source": "daily-brief",
+      "permissions": ["创建定时任务", "使用连接的服务：filesystem"]
+    },
+    {
+      "name": "@superagent/writing-helper",
+      "display_name": "写作助手",
+      "version": "1.0.0",
+      "category": "create",
+      "description": "纯对话的写作/润色助手，不读写任何文件、不联网。",
+      "source": "writing-helper",
+      "permissions": ["仅在自己的数据区内活动，无额外权限"]
+    },
+    {
+      "name": "connector-etiquette",
+      "display_name": "连接器使用礼仪",
+      "version": "1.0.0",
+      "category": "skill",
+      "kind": "skill",
+      "description": "使用已连接的外部服务时应遵循的礼仪与克制原则——只读优先、写操作先说明再执行、失败不重试轰炸。",
+      "source": "skills/connector-etiquette",
+      "author": "superagent",
+      "permissions": ["仅在自己的数据区内活动，无额外权限"]
+    }
+  ]
+}

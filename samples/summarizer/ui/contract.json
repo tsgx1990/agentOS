@@ -1,0 +1,2 @@
+{ "emits": { "summary_result": { "points": "string[]" } },
+  "commands": {} }

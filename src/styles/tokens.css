@@ -1,0 +1,75 @@
+/*
+ * C4a 三栏工作台 — 设计 Token
+ * 来源：docs/superpowers/specs/2026-07-17-ui-direction-c4a.md §2
+ * 约束：全局取色只经这里的变量，不在组件里硬编码颜色。
+ */
+:root {
+  /* 2.1 颜色 */
+  --color-ground: #f4f6fa;
+  --color-nav-bg: #eef1f7;
+  --color-nav-border: #e2e6ef;
+  --color-card-bg: #ffffff;
+  --color-card-border: #e6eaf2;
+  --color-panel-divider: #eef1f6;
+  --color-accent: #4c6ef5;
+  --text-on-accent: #fff; /* 强调色背景上的文字 */
+  --gradient-orb: radial-gradient(circle at 30% 30%, #8ea2ff, #4c6ef5);
+
+  --text-primary: #1c2230;
+  --text-secondary: #3a4356;
+  --text-muted: #8792a6;
+  --text-label: #96a0b5;
+
+  /* 2.2 状态徽标 status chip */
+  --chip-run-bg: #e7f0ff;
+  --chip-run-fg: #3b5bdb;
+  --chip-ready-bg: #e6fcf5;
+  --chip-ready-fg: #0ca678;
+  --chip-warn-bg: #fff3bf;
+  --chip-warn-fg: #b8860b;
+  --chip-idle-bg: #f1f3f5;
+  --chip-idle-fg: #868e96;
+
+  /* 2.2b 语义颜色 */
+  --color-danger: #e03131; /* 危险/错误红 */
+
+  /* 2.3 类目圆点色 */
+  --dot-life: #0ca678;
+  --dot-info: #f0648c;
+  --dot-create: #4bb3fd;
+  --dot-automation: #63e6be;
+  --dot-maker: #adb5bd;
+
+  /* 2.4 字体 */
+  --font-ui: "Avenir Next", "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* 2.5 尺寸 / 圆角 / 间距 */
+  --rail-l: 168px;
+  --rail-r: 288px;
+  --radius-card: 13px;
+  --radius-icon: 9px;
+  --radius-nav-item: 9px;
+  --space-card-padding: 12px;
+  --space-card-gap: 10px;
+  --icon-size: 32px;
+  --card-hover-shadow: 0 12px 26px -18px #22335055;
+}
+
+/* 全局基底：三栏外壳需要 html/body/#root 撑满视口，颜色只取自上面变量 */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-ground);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}

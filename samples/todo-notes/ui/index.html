@@ -1,0 +1,38 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8" />
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; color: #1c2230; background: #f4f6fa; }
+  h1 { font-size: 16px; } ul { list-style: none; padding: 0; }
+  li { background: #fff; border: 1px solid #e6eaf2; border-radius: 9px; padding: 8px 10px; margin: 6px 0; }
+  li.done { opacity: .5; text-decoration: line-through; }
+  form { display: flex; gap: 8px; margin-top: 12px; }
+  input { flex: 1; padding: 8px; border: 1px solid #e6eaf2; border-radius: 8px; }
+  button { padding: 8px 14px; border: 0; border-radius: 8px; background: #4c6ef5; color: #fff; }
+</style></head><body>
+<h1>待办便签</h1>
+<ul id="list"></ul>
+<form id="f"><input id="i" placeholder="说点要做的事……" autocomplete="off" /><button>记下</button></form>
+<script>
+  const listEl = document.getElementById('list');
+  function render(items) {
+    listEl.innerHTML = '';
+    (items || []).forEach((it) => {
+      const li = document.createElement('li');
+      li.textContent = it.text; if (it.done) li.className = 'done';
+      listEl.appendChild(li);
+    });
+  }
+  // 首启：拉持久状态
+  window.superagent.state.get('items');
+  window.superagent.on('__state__:items', (v) => render(v || []));
+  // agent 推送
+  window.superagent.on('items_update', (p) => {
+    const items = (p && p.items) || [];
+    render(items);
+    window.superagent.state.set('items', items); // UI 负责持久化
+  });
+  document.getElementById('f').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const v = document.getElementById('i').value.trim();
+    if (v) { window.superagent.prompt(v); document.getElementById('i').value = ''; }
+  });
+</script></body></html>
