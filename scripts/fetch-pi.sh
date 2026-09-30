@@ -75,6 +75,9 @@ fi
 mkdir -p "$(dirname "${DEST}")"
 rm -rf "${DEST}"
 mv "${tmp}/pi" "${DEST}"
+# .gitkeep 是入库的占位文件（让没拉二进制的检出也能通过 tauri-build 的资源校验）。
+# 上面是整目录替换，会把它一起带走；放回去，否则跑完脚本后 git 会显示它被删除。
+: > "${DEST}/.gitkeep"
 
 got="$("${DEST}/pi" --version)"
 if [ "${got}" != "${VERSION}" ]; then
