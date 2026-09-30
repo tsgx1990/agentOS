@@ -35,6 +35,9 @@ src-tauri/target
 .claude/worktree/
 .claude/worktrees/
 
+# 维护者的内部文档目录（单独的私有仓库，不属于本仓库；外部克隆里不存在）
+/.internal/
+
 # pi 官方独立二进制（scripts/fetch-pi.sh 下载，随包资源分发，不入库）
 src-tauri/binaries/pi/*
 
