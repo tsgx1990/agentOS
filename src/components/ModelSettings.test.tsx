@@ -309,7 +309,7 @@ test("清除正被默认模型 / 应用覆盖使用的 provider 的密钥：先�
   await mount();
   pick("DeepSeek 深度求索"); // 被 code-reviewer 的覆盖使用
   fireEvent.click(screen.getByRole("button", { name: "清除" }));
-  expect(screen.getByRole("alertdialog").textContent).toContain("应用 code-reviewer正在用它，清除后这些会话将无法调用模型");
+  expect(screen.getByRole("alertdialog").textContent).toContain("应用 code-reviewer 正在用它，清除后这些会话将无法调用模型");
   expect(invokeMock).not.toHaveBeenCalledWith("clear_api_key", expect.anything());
   fireEvent.click(screen.getByRole("button", { name: "确认清除" }));
   await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("clear_api_key", { provider: "deepseek" }));
@@ -319,7 +319,7 @@ test("清除全局默认所用 provider 的密钥：确认文案含「默认模�
   await mount();
   pick("^Anthropic");
   fireEvent.click(screen.getByRole("button", { name: "清除" }));
-  expect(screen.getByRole("alertdialog").textContent).toContain("默认模型正在用它");
+  expect(screen.getByRole("alertdialog").textContent).toContain("默认模型 正在用它");
 });
 
 test("全局默认指向未配置的 provider：默认模型处显示告警", async () => {

@@ -76,7 +76,7 @@ export function ProviderDetail(p: ProviderDetailProps) {
       {confirmClear && usedBy.length > 0 && (
         <div className="ms-confirm" role="alertdialog" aria-label="确认清除密钥">
           <p>
-            {usedBy.join("、")}正在用它，清除后这些会话将无法调用模型。确定清除密钥？
+            {usedBy.join("、")} 正在用它，清除后这些会话将无法调用模型。确定清除密钥？
           </p>
           <div className="ms-row">
             <button
