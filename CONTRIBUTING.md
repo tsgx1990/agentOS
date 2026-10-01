@@ -36,6 +36,7 @@ npm ci && (cd src-tauri/hosttools && npm ci)
 有两类测试标了 `#[ignore]`，默认不跑，需要显式执行：
 
 - 依赖真实 pi 或 node 的套件：`cd src-tauri && cargo test -- --ignored`（先跑 `./scripts/fetch-pi.sh` 并设 `SUPERAGENT_PI_BIN`，或保证 PATH 上有 pi）。CI 里对应 `real-pi.yml`，手动触发或每周跑一次。
+- 升级 pi 版本时，同时刷新 `src-tauri/tests/fixtures/pi-env-map.json`（方法见该文件的 `source` 字段），并核对 `src-tauri/src/providers.rs` 里的 provider 目录。
 - `vault::` 里三条会写真实钥匙串的测试：在没有可交互安全会话的环境里会失败，所以请在本机终端里跑 `cd src-tauri && cargo test --lib vault:: -- --ignored`。改动密钥存取相关代码时必须跑。
 
 ## 工作方式
