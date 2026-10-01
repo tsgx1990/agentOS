@@ -59,6 +59,35 @@ pub const SESSION_START_MARGIN: std::time::Duration = std::time::Duration::from_
 /// 该目录一个文件都不删（保守）。
 pub type RunningSessions = HashMap<String, Option<std::time::SystemTime>>;
 
+/// 由前台应用会话 `(app_id, 启动时刻)` 与后台会话 `(app_id, 启动时刻)` 构造运行中会话表。
+/// 规则：同一应用取最早的启动时刻；其中任一会话拿不到启动时刻 → 该应用为 `None`
+/// （一个文件都不删）；主助手（`main`，没有记录启动时刻）恒为 `None`。
+pub fn build_running_sessions(
+    foreground: &[(String, Option<std::time::SystemTime>)],
+    background: &[(String, std::time::SystemTime)],
+) -> RunningSessions {
+    let mut running: RunningSessions = HashMap::new();
+    let mut note = |id: &str, start: Option<std::time::SystemTime>| {
+        running
+            .entry(id.to_string())
+            .and_modify(|cur| {
+                *cur = match (*cur, start) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    _ => None,
+                }
+            })
+            .or_insert(start);
+    };
+    for (id, start) in foreground {
+        note(id, *start);
+    }
+    for (id, start) in background {
+        note(id, Some(*start));
+    }
+    running.insert("main".to_string(), None);
+    running
+}
+
 /// 不跟随链接地打开 `path` 为目录句柄；根本身是链接 / 非目录 → Err。
 fn open_real_dir(path: &Path) -> Result<DirHandle, String> {
     let id = identity_of_real_dir(path)?;
@@ -157,6 +186,16 @@ pub fn disk_report_with_threshold(
         apps,
         threshold_bytes: threshold,
         incomplete,
+    }
+}
+
+/// 取走并上报「层级过深」标记。每个清理分支处理完一个目录都必须经过这里，
+/// 否则标记会留在 `tally` 里被下一个目录误领。
+fn report_too_deep(label: &str, tally: &mut Tally, report: &mut ClearReport) {
+    if std::mem::take(&mut tally.too_deep) {
+        report
+            .refused
+            .push(format!("sessions/{label}（目录层级过深，部分内容未处理）"));
     }
 }
 
@@ -279,11 +318,7 @@ pub fn clear_caches(
                     clear_tree(&h, &|e| e.mtime >= cutoff, tally, 0);
                 }
             }
-            if std::mem::take(&mut tally.too_deep) {
-                report
-                    .refused
-                    .push(format!("sessions/{id}（目录层级过深，部分内容未处理）"));
-            }
+            report_too_deep(id, tally, report);
             Ok(())
         };
 
@@ -311,6 +346,7 @@ pub fn clear_caches(
                         let Some(id_str) = id.to_str() else {
                             if let Ok(sub) = root_h.open_subdir(&id) {
                                 clear_tree(&sub, &|_| false, &mut tally, 0);
+                                report_too_deep(&label, &mut tally, &mut report);
                             } else {
                                 report.refused.push(format!("sessions/{label}"));
                             }
@@ -680,6 +716,61 @@ mod tests {
         assert!(!td.path().join("sessions/a/top").exists());
         assert!(rep.refused.iter().any(|x| x.starts_with("sessions/a")));
         assert!(deep.join("big").exists());
+    }
+
+    #[test]
+    fn running_sessions_table_rules() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let t = |n: u64| UNIX_EPOCH + Duration::from_secs(n);
+        // 同一应用取最早启动时刻（前台与后台各一个）。
+        let r = build_running_sessions(
+            &[("a".into(), Some(t(100)))],
+            &[("a".into(), t(50)), ("b".into(), t(70))],
+        );
+        assert_eq!(r["a"], Some(t(50)));
+        assert_eq!(r["b"], Some(t(70)));
+        // 任一会话没有启动时刻 → 该应用为 None（不删任何文件），与顺序无关。
+        let r = build_running_sessions(&[("a".into(), None)], &[("a".into(), t(50))]);
+        assert_eq!(r["a"], None);
+        let r = build_running_sessions(&[("a".into(), Some(t(1)))], &[]);
+        assert_eq!(r["a"], Some(t(1)));
+        // 主助手恒为 None，即使后台里出现同名条目。
+        let r = build_running_sessions(&[], &[("main".into(), t(5))]);
+        assert_eq!(r["main"], None);
+        let r = build_running_sessions(&[("main".into(), Some(t(1)))], &[]);
+        assert_eq!(r["main"], None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deep_flag_in_non_utf8_dir_does_not_leak_to_next_app() {
+        use std::os::unix::ffi::OsStrExt;
+        let (td, l) = layout();
+        // 非 UTF-8 名字排在前面（0x01 起头），里面有超深目录。
+        let bad = td
+            .path()
+            .join("sessions")
+            .join(std::ffi::OsStr::from_bytes(b"\x01bad-\xff"));
+        // 部分文件系统（如 APFS）拒绝非 UTF-8 名字：无从构造时跳过（Linux CI 上会真正执行）。
+        if fs::create_dir_all(&bad).is_err() {
+            return;
+        }
+        let deep = deep_dir(&bad, MAX_DEPTH + 6);
+        write(&deep.join("big"), 1000);
+        write(&td.path().join("sessions/ok/f"), 10);
+        let rep = clear_caches(&l, None, &no_run(), &[], SystemTime::now()).unwrap();
+        assert!(
+            !rep.refused.iter().any(|x| x.starts_with("sessions/ok")),
+            "过深标记不得串到下一个应用：{:?}",
+            rep.refused
+        );
+        assert!(
+            rep.refused
+                .iter()
+                .any(|x| x.contains("bad-") && x.contains("过深")),
+            "非 UTF-8 目录自己的过深应被如实报告：{:?}",
+            rep.refused
+        );
     }
 
     #[test]
