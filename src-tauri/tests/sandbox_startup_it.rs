@@ -7,7 +7,9 @@ use super_agent_os::sandbox::{build_profile, sandbox_exec_argv};
 #[test]
 fn mock_pi_starts_under_base_profile() {
     let app_data = tempfile::tempdir().unwrap();
-    let sp = build_profile(app_data.path(), &[], &[], &[], true, None).unwrap();
+    // build_profile 要求可写路径已规范化（/var -> /private/var）。
+    let app_data_canon = std::fs::canonicalize(app_data.path()).unwrap();
+    let sp = build_profile(&app_data_canon, &[], &[], &[], true, None).unwrap();
     // 在沙盒里跑 mock_pi（读一行 stdin 空 → 退出）——关键是不能 SIGABRT
     let inner = vec![env!("CARGO_BIN_EXE_mock_pi").to_string()];
     let argv = sandbox_exec_argv(&sp, &inner);
@@ -55,7 +57,9 @@ fn node_starts_under_sandbox() {
 
     let app_data = tempfile::tempdir().unwrap();
     // deny_network=true：本用例只验证启动，不涉及网络。
-    let sp = build_profile(app_data.path(), &[], &[], &[prefix], true, None).unwrap();
+    // build_profile 要求可写路径已规范化（/var -> /private/var），见其文档。
+    let app_data_canon = std::fs::canonicalize(app_data.path()).unwrap();
+    let sp = build_profile(&app_data_canon, &[], &[], &[prefix], true, None).unwrap();
     let inner = vec![
         node_real.to_string_lossy().to_string(),
         "-e".to_string(),
@@ -65,7 +69,7 @@ fn node_starts_under_sandbox() {
     let status = std::process::Command::new("/usr/bin/sandbox-exec")
         .args(&argv)
         // 手工复现 session_mgr::spawn_app_session 的 cwd=$APP_DATA 修复。
-        .current_dir(app_data.path())
+        .current_dir(&app_data_canon)
         .status()
         .expect("spawn sandbox-exec 失败");
     assert!(

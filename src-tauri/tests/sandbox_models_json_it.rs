@@ -205,11 +205,12 @@ fn run_sandboxed_turn(root: &Path, trusted: bool, base_url: &str) -> Outcome {
         &hosttools,
         true,
         &ml,
-    );
+    )
+    .expect("启动计划应能拼装");
 
     let pi = super_agent_os::pi_bin::resolve_pi_bin();
     let runtime_paths = super_agent_os::pi_bin::runtime_install_dirs().expect("runtime dirs");
-    let app_data = layout.app_data_dir("a");
+    let app_data = layout.private_dir("apps", "a").unwrap();
     let sp = build_profile(
         &app_data,
         &plan.sandbox_read,
@@ -231,7 +232,10 @@ fn run_sandboxed_turn(root: &Path, trusted: bool, base_url: &str) -> Outcome {
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.args(&argv)
         .current_dir(&app_data)
-        .env("PI_CODING_AGENT_SESSION_DIR", layout.session_dir("a"))
+        .env(
+            "PI_CODING_AGENT_SESSION_DIR",
+            layout.private_dir("sessions", "a").unwrap(),
+        )
         .env("PI_TELEMETRY", "0")
         .stdin(Stdio::null());
     for (k, v) in &plan.env {

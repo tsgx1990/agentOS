@@ -24,7 +24,9 @@ fn run_in_sandbox_with_mcp(
     mcp_socket: Option<&std::path::Path>,
     sh: &str,
 ) -> std::process::ExitStatus {
-    let sp = build_profile(app_data, &[], &[], &[], deny_net, mcp_socket).unwrap();
+    // build_profile 要求可写路径已规范化（见其文档）；测试临时目录在 /var 下，先规范化。
+    let app_data = std::fs::canonicalize(app_data).unwrap();
+    let sp = build_profile(&app_data, &[], &[], &[], deny_net, mcp_socket).unwrap();
     let argv = sandbox_exec_argv(&sp, &["/bin/sh".into(), "-c".into(), sh.into()]);
     Command::new("/usr/bin/sandbox-exec")
         .args(&argv)
@@ -58,9 +60,10 @@ fn run_in_sandbox_with_paths(
 /// 用例 1：在 $APP_DATA 内写文件 —— 应被允许（exit success）。
 ///
 /// **踩坑记录**：macOS 上 `tempfile::tempdir()` 落在 `$TMPDIR`（`/var/folders/...`），
-/// 而 `/var` 是指向 `/private/var` 的符号链接。`build_profile` 对 `app_data` 做了
-/// canonicalize（这是必须的安全行为，防 app_data 路径本身经符号链接被偷换），
-/// 于是 WRITE 参数落地为 `/private/var/folders/...`。若这里 shell 命令仍用未
+/// 而 `/var` 是指向 `/private/var` 的符号链接。`build_profile` 要求 `app_data`
+/// 「规范化结果必须等于传入路径」（防 app_data 路径本身被应用换成符号链接后
+/// 被宿主重新授权，见 `build_profile` 文档），所以调用方必须传已规范化的路径
+/// `/private/var/folders/...`。若这里 shell 命令仍用未
 /// canonicalize 的原始路径（`/var/folders/...`）去写，会撞上一个已知的 macOS
 /// sandbox 行为：`(subpath ...)` 是按路径前缀比较，不会把 `/var/...` 和它符号
 /// 链接解析后等价的 `/private/var/...` 当同一路径处理，导致本应允许的写被误拒
@@ -404,4 +407,91 @@ fn declared_write_subpath_is_writable_but_parent_is_not() {
         &format!("echo x > {}", outside.display()),
     );
     assert!(!outside.exists(), "父目录不得可写");
+}
+
+/// C1 真实沙盒用例：沙盒内应用对自己的可写目录做「改名 + 放符号链接」，之后宿主重新构建
+/// 启动计划/profile 必须被拒（修复前 `canonicalize` 会跟随链接，把受害目录授权为可写）。
+/// 数据根建在 `CARGO_TARGET_TMPDIR`（规范化后不在 /private/var 下），受害目录是它的兄弟目录。
+/// 对 `sessions/<id>`、`agenthome/<id>`、`apps/<id>` 各做一遍。
+#[test]
+fn app_swapping_own_writable_dir_for_symlink_is_rejected_on_rebuild() {
+    use super_agent_os::paths::DataLayout;
+    use super_agent_os::registry::InstalledApp;
+    use super_agent_os::session_mgr::build_launch;
+
+    for kind in ["sessions", "agenthome", "apps"] {
+        let base = tempfile::Builder::new()
+            .prefix("c1-swap-")
+            .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+            .unwrap();
+        let base = std::fs::canonicalize(base.path()).unwrap();
+        let victim = base.join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        let layout = DataLayout::new(base.join("data"));
+        let app = InstalledApp {
+            app_id: "a".into(),
+            name: "a".into(),
+            version: "1.0.0".into(),
+            display_name: "a".into(),
+            category: "life".into(),
+            icon: None,
+            trusted: false,
+            domains: vec![],
+        };
+        // 首次启动计划（生产函数）：三个目录都已建好并规范化。
+        let plan = build_launch(&app, &layout, std::path::Path::new("/ht")).unwrap();
+        let app_data = layout.private_dir("apps", "a").unwrap();
+        let target = layout.private_dir(kind, "a").unwrap();
+        let apps_a = app_data.clone();
+        // 受害链接放在可写根之外：沙盒里应用换链接的落脚点是它自己可写的目录之内/本身。
+        let moved = if kind == "apps" {
+            // apps/<id> 自己就是 $APP_DATA：旧目录挪到 sessions/<id> 之下
+            layout.private_dir("sessions", "a").unwrap().join("old")
+        } else {
+            apps_a.join("old")
+        };
+        let sp = build_profile(&app_data, &[], &plan.sandbox_write, &[], true, None).unwrap();
+        let sh = format!(
+            "mv {t} {m} && ln -s {v} {t}",
+            t = target.display(),
+            m = moved.display(),
+            v = victim.display()
+        );
+        let argv = sandbox_exec_argv(&sp, &["/bin/sh".into(), "-c".into(), sh]);
+        let st = Command::new("/usr/bin/sandbox-exec")
+            .args(&argv)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(
+            st.success(),
+            "{kind}: 应用应能对自己的可写目录做改名+放链接（这是攻击前提）"
+        );
+        assert!(
+            std::fs::symlink_metadata(&target)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{kind}: 目录应已被换成符号链接"
+        );
+        // 宿主重新构建：私有目录校验拒绝，启动计划拒绝，内核 build_profile 也拒绝字面链接路径。
+        assert!(layout.private_dir(kind, "a").is_err(), "{kind}");
+        assert!(
+            build_launch(&app, &layout, std::path::Path::new("/ht")).is_err(),
+            "{kind}: 启动计划应拒绝"
+        );
+        let mut writes = plan.sandbox_write.clone();
+        if kind == "apps" {
+            assert!(build_profile(&target, &[], &writes, &[], true, None).is_err());
+        } else {
+            assert!(build_profile(&app_data, &[], &writes, &[], true, None).is_err());
+        }
+        writes.clear();
+        assert_eq!(
+            std::fs::read_dir(&victim).unwrap().count(),
+            0,
+            "{kind}: 受害目录不得有任何写入"
+        );
+    }
 }

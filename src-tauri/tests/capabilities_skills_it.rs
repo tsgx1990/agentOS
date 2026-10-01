@@ -114,7 +114,8 @@ fn undeclared_app_gets_no_skill_args_but_always_no_skills() {
         Path::new("/ht"),
         true,
         &super_agent_os::model_overrides::ModelLaunch::default(),
-    );
+    )
+    .expect("启动计划应能拼装");
     assert!(
         plan.extra_args.iter().any(|a| a == "--no-skills"),
         "所有应用都应带 --no-skills（与是否声明 skills 能力无关）：{:?}",

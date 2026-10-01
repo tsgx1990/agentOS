@@ -108,7 +108,17 @@ pub fn build_settings_json(
 ///   重写 `settings.json`/`models.json`，应用篡改它们只影响它自己、越不出沙盒；`models.json`
 ///   里只有 `${VAR}` 引用，没有密钥字面值。`assemble_launch_plan` 合并能力贡献时保留这两项。
 /// - **沙盒只读基座**：`sandbox_read` 恒含该应用的 `packages_dir` 与 `hosttools_dir`，理由见函数体内注释。
-pub fn build_launch(app: &InstalledApp, layout: &DataLayout, hosttools_dir: &Path) -> LaunchPlan {
+pub fn build_launch(
+    app: &InstalledApp,
+    layout: &DataLayout,
+    hosttools_dir: &Path,
+) -> Result<LaunchPlan, String> {
+    // 三个应用可写目录一律经 `private_dir` 取得（拒绝符号链接/非目录、返回规范化字面路径）：
+    // 应用能在自己的目录里换链接，宿主不能把「拉起那一刻由应用可控的文件系统状态解析出来的
+    // 路径」授权给沙盒（C1）。校验失败 → Err，调用方拒绝启动。
+    let agent_home = layout.private_dir("agenthome", &app.app_id)?;
+    let session_dir = layout.private_dir("sessions", &app.app_id)?;
+    let app_data = layout.private_dir("apps", &app.app_id)?;
     let pkg = layout.packages_dir(&app.app_id);
     let s = |p: PathBuf| p.to_string_lossy().to_string();
     let extra_args = vec![
@@ -119,18 +129,12 @@ pub fn build_launch(app: &InstalledApp, layout: &DataLayout, hosttools_dir: &Pat
         "--no-skills".into(),
     ];
     let env = vec![
-        (
-            "PI_CODING_AGENT_DIR".into(),
-            s(layout.agent_home_dir(&app.app_id)),
-        ),
-        (
-            "SUPERAGENT_APP_DATA".into(),
-            s(layout.app_data_dir(&app.app_id)),
-        ),
+        ("PI_CODING_AGENT_DIR".into(), s(agent_home.clone())),
+        ("SUPERAGENT_APP_DATA".into(), s(app_data)),
         ("SUPERAGENT_READ_PATHS".into(), "[]".to_string()), // P1 读路径为空（gate 只放行 APP_DATA）
         ("SUPERAGENT_APP_ID".into(), app.app_id.clone()),
     ];
-    LaunchPlan {
+    Ok(LaunchPlan {
         extra_args,
         env,
         // 只读基座：该应用自己的包目录（persona.md 等，应用自己的只读内容）与宿主的
@@ -140,11 +144,8 @@ pub fn build_launch(app: &InstalledApp, layout: &DataLayout, hosttools_dir: &Pat
         // 其它应用的目录。
         sandbox_read: vec![pkg.clone(), hosttools_dir.to_path_buf()],
         // 该应用自己的 agent home 与会话目录（见函数文档「沙盒可写基座」）。
-        sandbox_write: vec![
-            layout.agent_home_dir(&app.app_id),
-            layout.session_dir(&app.app_id),
-        ],
-    }
+        sandbox_write: vec![agent_home, session_dir],
+    })
 }
 
 /// 纯函数：把 `build_launch` 的确定性基座 + 该应用清单 + `CapabilityRegistry::launch`
@@ -177,8 +178,8 @@ pub fn assemble_launch_plan(
     hosttools_dir: &Path,
     sandboxed: bool,
     model: &ModelLaunch,
-) -> LaunchPlan {
-    let mut plan = build_launch(app, layout, hosttools_dir);
+) -> Result<LaunchPlan, String> {
+    let mut plan = build_launch(app, layout, hosttools_dir)?;
     // 模型选择（应用覆盖 > 全局默认 > 清单默认）与按所选 provider 最小注入的密钥环境变量，
     // 由调用方经 `resolve_model_launch` 算好后传入。这是产生启动计划的唯一拼装点，
     // 交互与 headless 两条路径一起受益（此前应用会话的 plan.env 里没有任何密钥）。
@@ -242,7 +243,7 @@ pub fn assemble_launch_plan(
             plan.sandbox_write.push(p.clone());
         }
     }
-    plan
+    Ok(plan)
 }
 
 /// 两条真实会话路径（交互 / headless）共用：读 providers.json、model-overrides.json 与钥匙串，
@@ -276,57 +277,112 @@ fn resolve_model_launch_with(
     ))
 }
 
-/// 重启用的（环境变量, 命令行参数）。
-type RelaunchInputs = (Vec<(String, String)>, Vec<String>);
-
 /// 退避重启用：重新解析模型选择（应用覆盖 / 全局默认 / 钥匙串里的最新密钥）、
-/// 重写 agent home（settings.json / models.json），并把新的 `--provider/--model` 参数与
-/// 密钥环境变量接到「不含模型部分」的基础参数 / 环境之后。首次启动沿用的 env 与参数
-/// 是启动那一刻的快照，用户之后改了默认、换了密钥、删了自定义服务，崩溃重启就会带着
-/// 过期值起会话，所以每次重启都要重新走一遍这条路径。解析失败（配置文件损坏）返回 Err。
-fn relaunch_inputs_with(
+/// 重写 agent home（settings.json / models.json），并**复用与首次启动同一个拼装函数**
+/// `assemble_launch_plan` 重新算出完整启动计划——模型 env/args 与能力贡献的相对顺序、
+/// 去重规则、沙盒读写白名单都与首次启动逐项一致（不再「基础参数 + 末尾追加模型参数」
+/// 另写一份），且三个应用可写目录在每次重启时重新经 `private_dir` 校验：应用若在崩溃前
+/// 把自己的目录换成了符号链接，这里直接 Err，不会带着被偷换的路径重新授权。
+/// 首次启动沿用的 env 与参数是启动那一刻的快照，用户之后改了默认、换了密钥、删了自定义
+/// 服务，崩溃重启就会带着过期值起会话，所以每次重启都要重新走一遍这条路径。
+/// 解析失败（配置文件损坏）或目录校验失败返回 Err。
+#[allow(clippy::too_many_arguments)]
+fn relaunch_plan_with(
     layout: &DataLayout,
-    app_id: &str,
+    app: &InstalledApp,
     manifest: &crate::pkg::Manifest,
+    contribution: &LaunchContribution,
+    hosttools_dir: &Path,
+    sandboxed: bool,
     settings: &serde_json::Value,
-    base_env: &[(String, String)],
-    base_args: &[String],
     lookup_key: impl Fn(&str) -> Option<String>,
-) -> Result<RelaunchInputs, String> {
-    let ml = resolve_model_launch_with(layout, app_id, manifest, lookup_key)?;
-    write_agent_home(
-        &layout.agent_home_dir(app_id),
-        settings,
-        ml.models_json.as_ref(),
-    )?;
-    let mut env = base_env.to_vec();
-    env.extend(ml.env);
-    let mut args = base_args.to_vec();
-    args.extend(ml.args);
-    Ok((env, args))
+) -> Result<LaunchPlan, String> {
+    let ml = resolve_model_launch_with(layout, &app.app_id, manifest, lookup_key)?;
+    write_agent_home(layout, &app.app_id, settings, ml.models_json.as_ref())?;
+    assemble_launch_plan(
+        app,
+        manifest,
+        contribution,
+        layout,
+        hosttools_dir,
+        sandboxed,
+        &ml,
+    )
+}
+
+/// 在 `dir` 里以「新建临时文件 → 写入 → fsync → rename 覆盖」的方式写 `name`。
+/// 临时文件用 `create_new`（O_CREAT|O_EXCL）创建：路径上已有任何东西（含符号链接）都会失败，
+/// 不会跟随链接写到别处；`rename` 替换的是目录项本身，目标处若是应用放的符号链接，
+/// 链接被替换掉而不是被跟随（C2：宿主不能被应用诱导去覆盖任意文件）。
+fn write_file_replacing(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(
+        ".{name}.{nanos}.{}.{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, dir.join(name))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|e| e.to_string())
 }
 
 /// 写 settings.json；`models_json` 为 Some 则写 models.json，None 则删除旧的 models.json
 /// （NotFound 忽略）——防止撤销自定义 provider 后旧文件残留。models.json 里只有
 /// `${环境变量名}` 引用，没有密钥字面值。
+///
+/// agent home 是应用可写的目录（应用能在里面放符号链接、甚至把整个目录换成链接），而本函数
+/// 由宿主在沙盒外执行：目录先经 `DataLayout::private_dir` 校验，文件一律经
+/// `write_file_replacing` 写入，绝不跟随链接（C2）。
 fn write_agent_home(
+    layout: &DataLayout,
+    app_id: &str,
+    settings: &serde_json::Value,
+    models_json: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let home = layout.private_dir("agenthome", app_id)?;
+    write_agent_home_files(&home, settings, models_json)
+}
+
+/// `write_agent_home` 在已校验目录里的写文件部分。
+fn write_agent_home_files(
     home: &Path,
     settings: &serde_json::Value,
     models_json: Option<&serde_json::Value>,
 ) -> Result<(), String> {
-    std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
-    std::fs::write(
-        home.join("settings.json"),
-        serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    write_file_replacing(
+        home,
+        "settings.json",
+        serde_json::to_string_pretty(settings)
+            .map_err(|e| e.to_string())?
+            .as_bytes(),
+    )?;
     let models_path = home.join("models.json");
     match models_json {
-        Some(v) => std::fs::write(
-            &models_path,
-            serde_json::to_string_pretty(v).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string()),
+        Some(v) => write_file_replacing(
+            home,
+            "models.json",
+            serde_json::to_string_pretty(v)
+                .map_err(|e| e.to_string())?
+                .as_bytes(),
+        ),
+        // remove_file 对符号链接只删链接本身。
         None => match std::fs::remove_file(&models_path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -637,7 +693,8 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
     // models.json（清单要先读到才能算出有效模型，所以挪到这里）。
     let model_launch = resolve_model_launch(&layout, &app_id, &manifest)?;
     write_agent_home(
-        &layout.agent_home_dir(&app_id),
+        &layout,
+        &app_id,
         &build_settings_json(&record, &layout, sandboxed),
         model_launch.models_json.as_ref(),
     )?;
@@ -723,7 +780,7 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
         &hosttools,
         sandboxed,
         &model_launch,
-    );
+    )?;
 
     // Task14b：按 system.schedule 权限门控，把该 app 清单声明的 scheduledTasks
     // 登记进 TaskRegistry（补上 Task10 register()/Task13 run_catch_up_for_app() 之间
@@ -739,8 +796,9 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
         eprintln!("app {app_id} 的定时任务注册失败，跳过：{e}");
     }
 
-    let session_dir = layout.session_dir(&app_id);
-    let app_data_dir = layout.app_data_dir(&app_id);
+    // 沙盒外宿主取得的、已校验为真实目录的规范化字面路径（C1）。
+    let session_dir = layout.private_dir("sessions", &app_id)?;
+    let app_data_dir = layout.private_dir("apps", &app_id)?;
     // Task9b：若上面已经为该 app 起了 MCP socket 监听器，这里任何一步失败都必须
     // 把它一并 stop() 掉（中止 accept 循环 + 删 socket 文件）——否则一次 spawn
     // 失败/无空闲槽位就会在磁盘上留一个没有对应存活会话、却仍在监听的孤儿 socket。
@@ -827,26 +885,16 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
     // per-app 事件转发 + 退避重启看护（仿 P0 start_main_session）：
     // 事件名统一带 `:<appId>` 后缀，UiEmit → `ui-emit:<appId>`。
     let id = app_id.clone();
-    // 重启用「不含模型部分」的基础 env / 参数（模型部分每次重启时重新解析，见
-    // `relaunch_inputs_with`）；首次启动仍用上面含模型部分的 `plan`。
-    let base_plan = assemble_launch_plan(
-        &record,
-        &manifest,
-        &contribution,
-        &layout,
-        &hosttools,
-        sandboxed,
-        &ModelLaunch::default(),
-    );
-    let restart_base_env = base_plan.env;
-    let restart_base_args = base_plan.extra_args;
+    // 重启不复用首次启动的快照：每次重启由 `relaunch_plan_with` 重新解析模型选择、重写
+    // agent home，并用与首次启动同一个 `assemble_launch_plan` 重新拼装完整启动计划。
     let restart_settings = build_settings_json(&record, &layout, sandboxed);
     let restart_manifest = manifest;
+    let restart_contribution = contribution;
+    let restart_record = record.clone();
+    let restart_hosttools = hosttools.clone();
     let restart_layout = layout.clone();
     let restart_trusted = record.trusted;
     let restart_mcp_socket = injected_mcp_socket;
-    let restart_sandbox_read = plan.sandbox_read;
-    let restart_sandbox_write = plan.sandbox_write;
     let app = app.clone();
     // `layout` 从这里开始不再被本函数其余部分使用，整个移入下面的事件循环闭包——
     // 只用于 PiEvent::ToolExecuted 分支调用 audit::record（见该分支注释）。
@@ -966,38 +1014,45 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
             match backoff.next_delay() {
                 Some(delay) => {
                     tokio::time::sleep(delay).await;
-                    let (restart_env, restart_args) = match relaunch_inputs_with(
+                    // 每次重启都重新校验三个应用可写目录（C1）并重新拼装完整计划；任何一步
+                    // 失败都不拉起、不带旧快照硬起，走与 spawn 失败相同的退避路径并通知界面。
+                    let relaunch = relaunch_plan_with(
                         &restart_layout,
-                        &id,
+                        &restart_record,
                         &restart_manifest,
+                        &restart_contribution,
+                        &restart_hosttools,
+                        sandboxed,
                         &restart_settings,
-                        &restart_base_env,
-                        &restart_base_args,
                         crate::secrets::read_key,
-                    ) {
+                    )
+                    .and_then(|plan| {
+                        let sd = restart_layout.private_dir("sessions", &id)?;
+                        let ad = restart_layout.private_dir("apps", &id)?;
+                        Ok((plan, sd, ad))
+                    });
+                    let (plan, restart_session_dir, restart_app_data_dir) = match relaunch {
                         Ok(v) => v,
                         Err(e) => {
-                            // 配置文件损坏等：不带着过期的 env/参数硬起，走与 spawn 失败相同的
-                            // 退避路径（continue），并把原因告诉界面。
                             let _ = app.emit(
                                 &format!("agent-error:{id}"),
                                 serde_json::json!({
                                     "kind": "model_config",
-                                    "message": format!("应用 {id} 重启时读取模型配置失败：{e}")
+                                    "message": format!("应用 {id} 重启失败（模型配置或私有目录校验未通过）：{e}")
                                 }),
                             );
                             continue;
                         }
                     };
                     match spawn_app_session(
-                        &session_dir,
-                        &app_data_dir,
+                        &restart_session_dir,
+                        &restart_app_data_dir,
                         restart_trusted,
-                        restart_env,
-                        restart_args,
+                        plan.env,
+                        plan.extra_args,
                         restart_mcp_socket.clone(),
-                        restart_sandbox_read.clone(),
-                        restart_sandbox_write.clone(),
+                        plan.sandbox_read,
+                        plan.sandbox_write,
                     )
                     .await
                     {
@@ -1344,7 +1399,8 @@ async fn run_headless_session(
 
     let model_launch = resolve_model_launch(layout, &app.app_id, &manifest)?;
     write_agent_home(
-        &layout.agent_home_dir(&app.app_id),
+        layout,
+        &app.app_id,
         &build_settings_json(app, layout, sandboxed),
         model_launch.models_json.as_ref(),
     )?;
@@ -1364,10 +1420,10 @@ async fn run_headless_session(
         hosttools_dir,
         sandboxed,
         &model_launch,
-    );
+    )?;
 
-    let session_dir = layout.session_dir(&app.app_id);
-    let app_data_dir = layout.app_data_dir(&app.app_id);
+    let session_dir = layout.private_dir("sessions", &app.app_id)?;
+    let app_data_dir = layout.private_dir("apps", &app.app_id)?;
 
     let (mut session, mut rx) = spawn_app_session(
         &session_dir,
@@ -1635,6 +1691,11 @@ pub async fn spawn_preview_session(staging_dir: &Path) -> Result<(), String> {
     use crate::rpc::PiEvent;
 
     let sandboxed = sandboxing_available();
+    // 沙盒要求可写路径「规范化后等于自身」（见 `sandbox::build_profile`）：暂存目录由宿主刚
+    // 建好、此刻应用代码尚未运行，在这里规范化一次，之后全程用这个字面路径。
+    let staging_dir_canon =
+        std::fs::canonicalize(staging_dir).map_err(|e| format!("预览暂存目录无法规范化：{e}"))?;
+    let staging_dir = staging_dir_canon.as_path();
     let agent_home = staging_dir.join(PREVIEW_AGENT_HOME_SUBDIR);
     let preview_session_dir = staging_dir.join(PREVIEW_SESSION_SUBDIR);
 
@@ -1855,17 +1916,23 @@ mod tests {
 
     #[test]
     fn build_launch_sandbox_write_is_exactly_own_agent_home_and_session_dir() {
-        let layout = DataLayout::new(Path::new("/data").to_path_buf());
-        let plan = build_launch(&app("a", false), &layout, Path::new("/ht"));
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let plan = build_launch(&app("a", false), &layout, Path::new("/ht")).unwrap();
+        // 写白名单是经 `private_dir` 取得的规范化字面路径。
         assert_eq!(
             plan.sandbox_write,
-            vec![layout.agent_home_dir("a"), layout.session_dir("a")]
+            vec![
+                layout.private_dir("agenthome", "a").unwrap(),
+                layout.private_dir("sessions", "a").unwrap()
+            ]
         );
         // 绝不含数据根、其它应用的目录，也不含 $APP_DATA 之外的共享目录。
         for p in &plan.sandbox_write {
-            assert_ne!(p, Path::new("/data"));
+            assert_ne!(p, &root);
             assert!(!p.ends_with("b"), "{p:?}");
-            assert!(!p.starts_with("/data/apps"), "{p:?}");
+            assert!(!p.starts_with(root.join("apps")), "{p:?}");
         }
         // 只读基座恰为该应用自己的包目录与 hosttools，不含数据根或其它应用目录。
         assert_eq!(
@@ -1873,19 +1940,68 @@ mod tests {
             vec![layout.packages_dir("a"), PathBuf::from("/ht")]
         );
         for p in &plan.sandbox_read {
-            assert_ne!(p, Path::new("/data"));
+            assert_ne!(p, &root);
             assert!(!p.ends_with("b"), "{p:?}");
-            assert!(!p.starts_with("/data/apps"), "{p:?}");
+            assert!(!p.starts_with(root.join("apps")), "{p:?}");
+        }
+    }
+
+    /// C1（I1-2）：应用把自己的 sessions/agenthome/apps 目录各换成指向受害目录的符号链接后，
+    /// 从生产启动计划出发（`build_launch`/`assemble_launch_plan`，以及再往下到
+    /// `sandboxed_argv`）一律拒绝；受害目录无任何写入。
+    #[test]
+    fn launch_plan_rejects_swapped_private_dirs_c1() {
+        for kind in ["sessions", "agenthome", "apps"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let layout = DataLayout::new(tmp.path().to_path_buf());
+            let rec = app("a", false);
+            build_launch(&rec, &layout, Path::new("/ht")).expect("正常目录应通过");
+            let victim = tmp.path().join("victim");
+            std::fs::create_dir_all(&victim).unwrap();
+            let dir = layout.private_dir(kind, "a").unwrap();
+            std::fs::rename(&dir, tmp.path().join(format!("{kind}-old"))).unwrap();
+            std::os::unix::fs::symlink(&victim, &dir).unwrap();
+            let e = build_launch(&rec, &layout, Path::new("/ht"))
+                .err()
+                .expect("build_launch 应拒绝");
+            assert!(e.contains("符号链接"), "{kind}: {e}");
+            assert!(assemble_launch_plan(
+                &rec,
+                &manifest_min(),
+                &LaunchContribution::default(),
+                &layout,
+                Path::new("/ht"),
+                true,
+                &ModelLaunch::default(),
+            )
+            .is_err());
+            // 即便有人绕过 private_dir 直接把链接路径交给 sandboxed_argv，内核层也拒绝。
+            #[cfg(target_os = "macos")]
+            {
+                let r = sandboxed_argv(
+                    &layout.app_data_dir("a"),
+                    false,
+                    &[],
+                    None,
+                    &[],
+                    &[layout.agent_home_dir("a"), layout.session_dir("a")],
+                );
+                assert!(r.is_err(), "{kind}: sandboxed_argv 应拒绝符号链接可写路径");
+            }
+            assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0, "{kind}");
         }
     }
 
     #[test]
     fn assemble_keeps_base_sandbox_write_and_merges_contribution_without_dups() {
-        let layout = DataLayout::new(Path::new("/data").to_path_buf());
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let home = layout.private_dir("agenthome", "a").unwrap();
+        let sess = layout.private_dir("sessions", "a").unwrap();
         let extra = PathBuf::from("/data/shared/x");
         let contribution = LaunchContribution {
             sandbox_read: vec![PathBuf::from("/r")],
-            sandbox_write: vec![extra.clone(), layout.session_dir("a")],
+            sandbox_write: vec![extra.clone(), sess.clone()],
             ..Default::default()
         };
         let plan = assemble_launch_plan(
@@ -1896,11 +2012,9 @@ mod tests {
             Path::new("/ht"),
             true,
             &ModelLaunch::default(),
-        );
-        assert_eq!(
-            plan.sandbox_write,
-            vec![layout.agent_home_dir("a"), layout.session_dir("a"), extra]
-        );
+        )
+        .unwrap();
+        assert_eq!(plan.sandbox_write, vec![home, sess, extra]);
         assert_eq!(
             plan.sandbox_read,
             vec![
@@ -1913,8 +2027,9 @@ mod tests {
 
     #[test]
     fn launch_has_hosttools_persona_env() {
-        let layout = DataLayout::new(Path::new("/data").to_path_buf());
-        let plan = build_launch(&app("x", true), &layout, Path::new("/ht"));
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let plan = build_launch(&app("x", true), &layout, Path::new("/ht")).unwrap();
         assert!(plan
             .extra_args
             .windows(2)
@@ -1986,7 +2101,8 @@ mod tests {
             Path::new("/ht"),
             true,
             &ModelLaunch::default(),
-        );
+        )
+        .unwrap();
         let tools = tools_arg(&plan);
         for t in [
             "read",
@@ -2022,7 +2138,8 @@ mod tests {
             Path::new("/ht"),
             true,
             &ModelLaunch::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(tools_arg(&plan), resolve_tools(&[], false, true));
         assert!(!plan.extra_args.iter().any(|a| a.ends_with("mcp_bridge.ts")));
     }
@@ -2043,7 +2160,8 @@ mod tests {
             Path::new("/ht"),
             true,
             &ModelLaunch::default(),
-        );
+        )
+        .unwrap();
         let tools = tools_arg(&plan);
         assert_eq!(tools.iter().filter(|t| *t == "read").count(), 1);
         assert_eq!(tools.iter().filter(|t| *t == "__host_ui_emit__").count(), 1);
@@ -2072,7 +2190,8 @@ mod tests {
             Path::new("/ht"),
             true,
             &ModelLaunch::default(),
-        );
+        )
+        .unwrap();
         let tools = tools_arg(&plan);
         assert!(tools.contains(&"ok".to_string()), "{tools:?}");
         assert!(
@@ -2112,7 +2231,8 @@ mod tests {
             Path::new("/ht"),
             true,
             &ModelLaunch::default(),
-        );
+        )
+        .unwrap();
         let tools = tools_arg(&plan);
         assert!(tools.contains(&"ok".to_string()), "{tools:?}");
         assert!(
@@ -2141,8 +2261,9 @@ mod tests {
     fn launch_env_carries_app_id_for_gate_audit_payload() {
         // P2 新增：permission_gate.ts 需要 SUPERAGENT_APP_ID 才能在它上报的
         // advisory 审计事件里带上 app_id（见 build_launch 文档）。
-        let layout = DataLayout::new(Path::new("/data").to_path_buf());
-        let plan = build_launch(&app("my-app", true), &layout, Path::new("/ht"));
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let plan = build_launch(&app("my-app", true), &layout, Path::new("/ht")).unwrap();
         assert!(plan
             .env
             .iter()
@@ -2173,7 +2294,8 @@ mod tests {
             Path::new("/ht"),
             true,
             &ml,
-        );
+        )
+        .unwrap();
         let pos = |x: &str| plan.extra_args.iter().position(|a| a == x).unwrap();
         assert_eq!(plan.extra_args[pos("--provider") + 1], "deepseek");
         assert_eq!(plan.extra_args[pos("--model") + 1], "deepseek-v4-flash");
@@ -2196,7 +2318,8 @@ mod tests {
             Path::new("/ht"),
             true,
             &ModelLaunch::default(),
-        );
+        )
+        .unwrap();
         assert!(!plan
             .extra_args
             .iter()
@@ -2263,36 +2386,51 @@ mod tests {
         };
         let key = |_: &str| Some("sk-test-fake".to_string());
         let settings = serde_json::json!({"packages": []});
-        let base_env = vec![("BASE".to_string(), "1".to_string())];
-        let base_args = vec!["--tools".to_string(), "read".to_string()];
+        let contribution = LaunchContribution {
+            extra_args: vec!["--cx".into()],
+            env: vec![("CX_ENV".into(), "1".into())],
+            ..Default::default()
+        };
+        let rec = app("a", false);
+        let ht = Path::new("/ht");
+        let relaunch = || {
+            relaunch_plan_with(
+                &layout,
+                &rec,
+                &manifest_min(),
+                &contribution,
+                ht,
+                true,
+                &settings,
+                key,
+            )
+        };
         let home = layout.agent_home_dir("a");
+        let pos = |v: &[String], x: &str| v.iter().position(|a| a == x).unwrap();
 
         // 首次：覆盖到自定义 provider -> 带模型参数、密钥 env，并写出 models.json。
         set_override(serde_json::json!({"version": 1, "global": null,
             "apps": {"a": {"provider": "custom-mock", "model": "m1"}}}));
-        let (env, args) = relaunch_inputs_with(
-            &layout,
-            "a",
-            &manifest_min(),
-            &settings,
-            &base_env,
-            &base_args,
-            key,
-        )
-        .unwrap();
-        assert_eq!(
-            args,
-            [
-                "--tools",
-                "read",
-                "--provider",
-                "custom-mock",
-                "--model",
-                "m1"
-            ]
-        );
-        assert!(env.contains(&("BASE".to_string(), "1".to_string())));
-        assert!(env
+        let plan = relaunch().unwrap();
+        // M3：与首次启动同一个拼装函数——整份计划逐项相等，而不是「基础参数 + 末尾追加」。
+        let ml = resolve_model_launch_with(&layout, "a", &manifest_min(), key).unwrap();
+        let first =
+            assemble_launch_plan(&rec, &manifest_min(), &contribution, &layout, ht, true, &ml)
+                .unwrap();
+        assert_eq!(plan.extra_args, first.extra_args);
+        assert_eq!(plan.env, first.env);
+        assert_eq!(plan.sandbox_read, first.sandbox_read);
+        assert_eq!(plan.sandbox_write, first.sandbox_write);
+        // 顺序：persona/gate -> 模型参数 -> --tools -> 能力贡献的参数。
+        let a = &plan.extra_args;
+        assert!(pos(a, "-e") < pos(a, "--provider"));
+        assert!(pos(a, "--model") < pos(a, "--tools"));
+        assert!(pos(a, "--tools") < pos(a, "--cx"));
+        assert_eq!(a[pos(a, "--provider") + 1], "custom-mock");
+        assert_eq!(a[pos(a, "--model") + 1], "m1");
+        assert!(plan.env.contains(&("CX_ENV".to_string(), "1".to_string())));
+        assert!(plan
+            .env
             .iter()
             .any(|(k, v)| k == "SUPERAGENT_KEY_CUSTOM_MOCK" && v == "sk-test-fake"));
         assert!(home.join("models.json").exists());
@@ -2301,58 +2439,118 @@ mod tests {
         // models.json 被清掉），而不是沿用首次启动的快照。
         set_override(serde_json::json!({"version": 1, "global": null,
             "apps": {"a": {"provider": "deepseek", "model": "deepseek-v4-flash"}}}));
-        let (env, args) = relaunch_inputs_with(
-            &layout,
-            "a",
-            &manifest_min(),
-            &settings,
-            &base_env,
-            &base_args,
-            key,
-        )
-        .unwrap();
-        assert_eq!(
-            args,
-            [
-                "--tools",
-                "read",
-                "--provider",
-                "deepseek",
-                "--model",
-                "deepseek-v4-flash"
-            ]
-        );
-        assert!(!env.iter().any(|(k, _)| k == "SUPERAGENT_KEY_CUSTOM_MOCK"));
+        let plan = relaunch().unwrap();
+        let a = &plan.extra_args;
+        assert_eq!(a[pos(a, "--provider") + 1], "deepseek");
+        assert_eq!(a[pos(a, "--model") + 1], "deepseek-v4-flash");
+        assert!(!plan
+            .env
+            .iter()
+            .any(|(k, _)| k == "SUPERAGENT_KEY_CUSTOM_MOCK"));
         assert!(!home.join("models.json").exists());
 
         // 配置损坏：返回 Err（调用方走退避失败路径），不静默沿用旧值。
         std::fs::write(layout.model_overrides_path(), "{ bad").unwrap();
-        assert!(relaunch_inputs_with(
-            &layout,
-            "a",
-            &manifest_min(),
-            &settings,
-            &base_env,
-            &base_args,
-            key,
-        )
-        .is_err());
+        assert!(relaunch().is_err());
+    }
+
+    /// C1：应用在崩溃前把自己的 sessions/agenthome/apps 目录换成指向受害目录的符号链接，
+    /// 退避重启走的 `relaunch_plan_with` 必须拒绝（不重新授权），且受害目录无任何写入。
+    #[test]
+    fn relaunch_rejects_swapped_private_dirs_and_leaves_victim_untouched() {
+        for kind in ["sessions", "agenthome", "apps"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let layout = DataLayout::new(tmp.path().to_path_buf());
+            let rec = app("a", false);
+            let settings = serde_json::json!({"packages": []});
+            let ht = Path::new("/ht");
+            let call = || {
+                relaunch_plan_with(
+                    &layout,
+                    &rec,
+                    &manifest_min(),
+                    &LaunchContribution::default(),
+                    ht,
+                    true,
+                    &settings,
+                    |_: &str| None,
+                )
+            };
+            call().expect("正常目录应能重启");
+            let victim = tmp.path().join("victim");
+            std::fs::create_dir_all(&victim).unwrap();
+            let dir = layout.private_dir(kind, "a").unwrap();
+            std::fs::rename(&dir, tmp.path().join(format!("{kind}-old"))).unwrap();
+            std::os::unix::fs::symlink(&victim, &dir).unwrap();
+            let e = call().err().expect("应被拒绝");
+            assert!(e.contains("符号链接"), "{kind}: {e}");
+            assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0, "{kind}");
+        }
     }
 
     #[test]
     fn write_agent_home_removes_stale_models_json() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("agenthome").join("a");
+        std::fs::create_dir_all(&home).unwrap();
         let settings = serde_json::json!({"packages": []});
         let models = serde_json::json!({"providers": {}});
-        write_agent_home(&home, &settings, Some(&models)).unwrap();
+        write_agent_home_files(&home, &settings, Some(&models)).unwrap();
         assert!(home.join("models.json").exists());
         assert!(home.join("settings.json").exists());
-        write_agent_home(&home, &settings, None).unwrap();
+        write_agent_home_files(&home, &settings, None).unwrap();
         assert!(!home.join("models.json").exists());
         assert!(home.join("settings.json").exists());
         // 本就没有时也不报错
-        write_agent_home(&home, &settings, None).unwrap();
+        write_agent_home_files(&home, &settings, None).unwrap();
+    }
+
+    #[test]
+    fn write_agent_home_does_not_follow_symlinks_c2() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("agenthome").join("a");
+        std::fs::create_dir_all(&home).unwrap();
+        let victim_s = tmp.path().join("victim-settings");
+        let victim_m = tmp.path().join("victim-models");
+        std::fs::write(&victim_s, "VICTIM-S").unwrap();
+        std::fs::write(&victim_m, "VICTIM-M").unwrap();
+        std::os::unix::fs::symlink(&victim_s, home.join("settings.json")).unwrap();
+        std::os::unix::fs::symlink(&victim_m, home.join("models.json")).unwrap();
+        let settings = serde_json::json!({"packages": []});
+        let models = serde_json::json!({"providers": {}});
+        write_agent_home_files(&home, &settings, Some(&models)).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim_s).unwrap(), "VICTIM-S");
+        assert_eq!(std::fs::read_to_string(&victim_m).unwrap(), "VICTIM-M");
+        for n in ["settings.json", "models.json"] {
+            let m = std::fs::symlink_metadata(home.join(n)).unwrap();
+            assert!(m.file_type().is_file(), "{n} 应变为普通文件");
+        }
+        let got: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(got, settings);
+        // models.json 为链接时删除只删链接本身
+        std::fs::remove_file(home.join("models.json")).unwrap();
+        std::os::unix::fs::symlink(&victim_m, home.join("models.json")).unwrap();
+        write_agent_home_files(&home, &settings, None).unwrap();
+        assert!(!home.join("models.json").exists());
+        assert_eq!(std::fs::read_to_string(&victim_m).unwrap(), "VICTIM-M");
+    }
+
+    /// C2：agent home 目录本身被换成指向受害目录的符号链接时，`write_agent_home` 拒绝，
+    /// 受害目录里不会出现 settings.json / models.json。
+    #[test]
+    fn write_agent_home_rejects_symlinked_home_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::create_dir_all(tmp.path().join("agenthome")).unwrap();
+        std::os::unix::fs::symlink(&victim, tmp.path().join("agenthome/a")).unwrap();
+        let settings = serde_json::json!({"packages": []});
+        let models = serde_json::json!({"providers": {}});
+        assert!(write_agent_home(&layout, "a", &settings, Some(&models)).is_err());
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
     }
 
     // ---- audit_verdict_for_tool_execution ----

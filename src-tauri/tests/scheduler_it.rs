@@ -286,7 +286,7 @@ fn task_mode_launch_reuses_p2_sandbox_wrapping_argv0_is_sandbox_exec() {
     let tmp = tempfile::tempdir().unwrap();
     let layout = DataLayout::new(tmp.path().to_path_buf());
     layout.ensure_app("app1").unwrap();
-    let app_data_dir = layout.app_data_dir("app1");
+    let app_data_dir = layout.private_dir("apps", "app1").unwrap();
 
     // 与 `spawn_task_session` 对该 app 实际调用 `spawn_app_session`（进而调用
     // `sandboxed_argv`）时会传入的参数同形状：`trusted=false`（`installed_app`
@@ -335,7 +335,7 @@ fn task_mode_mcp_injection_sandbox_profile_carries_socket_allow() {
     let tmp = tempfile::tempdir().unwrap();
     let layout = DataLayout::new(tmp.path().to_path_buf());
     layout.ensure_app("app1").unwrap();
-    let app_data_dir = layout.app_data_dir("app1");
+    let app_data_dir = layout.private_dir("apps", "app1").unwrap();
 
     let socket_path = layout.mcp_socket_path("app1");
     std::fs::create_dir_all(socket_path.parent().unwrap()).unwrap();

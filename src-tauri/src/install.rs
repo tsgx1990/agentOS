@@ -125,7 +125,7 @@ pub fn install_from_dir(
     result
 }
 
-/// 卸载应用：删除包目录、会话目录、状态文件，可选删除应用数据，摘除注册，
+/// 卸载应用：删除包目录、会话目录、agent home、状态文件，可选删除应用数据，摘除注册，
 /// 摘除该 app 的全部已注册定时任务（Task14，见 `scheduler::TaskRegistry::deregister_app`）。
 /// 尽力删除，收集错误后如实报告残留。成功返回 Ok(())；若有残留返回 Err(残留列表)。
 pub fn uninstall_fs(
@@ -136,12 +136,17 @@ pub fn uninstall_fs(
 ) -> Result<(), String> {
     let mut residue: Vec<String> = Vec::new();
 
-    // 辅助函数：删除目录，收集错误
+    // 辅助函数：删除目录，收集错误。用 `symlink_metadata`（不跟随）判断：顶层若是符号链接
+    // （应用可在自己的可写目录里把目录换成链接）只删链接本身，绝不递归进链接目标。
     let rm = |p: std::path::PathBuf, residue: &mut Vec<String>| {
-        if p.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&p) {
-                residue.push(format!("{}: {e}", p.display()));
-            }
+        let r = match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_dir() => std::fs::remove_dir_all(&p),
+            Ok(_) => std::fs::remove_file(&p),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = r {
+            residue.push(format!("{}: {e}", p.display()));
         }
     };
 
@@ -150,6 +155,10 @@ pub fn uninstall_fs(
 
     // 删除 sessions/<app_id>
     rm(layout.session_dir(app_id), &mut residue);
+
+    // 删除 agenthome/<app_id>（M4：此前卸载后残留；里面只有宿主每次拉起前重写的 settings.json /
+    // models.json 与 pi 自己的凭据/信任存储）。无论是否保留应用数据都删。
+    rm(layout.agent_home_dir(app_id), &mut residue);
 
     // 删除 state/<app_id>.json
     let state = layout.state_path(app_id);
@@ -659,5 +668,37 @@ mod tests {
             after.iter().any(|t| t.app_id == id && t.id == "nightly"),
             "升级失败回滚后 nightly 应被 on_install(existing, old_perms) 重新注册，实际：{after:?}"
         );
+    }
+
+    /// M4：卸载同时删除 agenthome/<id>（settings.json/models.json/凭据存储等宿主写的配置）；
+    /// 顶层若被应用换成符号链接，只删链接本身，不跟随删除链接目标里的内容。
+    #[test]
+    fn uninstall_removes_agent_home_and_never_follows_top_level_link() {
+        for as_link in [false, true] {
+            let root = tempdir().unwrap();
+            let layout = DataLayout::new(root.path().to_path_buf());
+            let reg = RegistryStore::new(layout.registry_path());
+            let id = "superagent__todo-notes";
+            let src = tempdir().unwrap();
+            make_pkg(src.path());
+            install_or_upgrade(src.path(), &layout, &reg, true).unwrap();
+            let victim = root.path().join("victim");
+            fs::create_dir_all(&victim).unwrap();
+            fs::write(victim.join("keep.txt"), "keep").unwrap();
+            let home = layout.agent_home_dir(id);
+            if as_link {
+                fs::create_dir_all(home.parent().unwrap()).unwrap();
+                std::os::unix::fs::symlink(&victim, &home).unwrap();
+            } else {
+                fs::create_dir_all(&home).unwrap();
+                fs::write(home.join("settings.json"), "{}").unwrap();
+            }
+            uninstall_fs(id, &layout, &reg, false).unwrap();
+            assert!(
+                fs::symlink_metadata(&home).is_err(),
+                "agenthome 应被删除（link={as_link}）"
+            );
+            assert_eq!(fs::read_to_string(victim.join("keep.txt")).unwrap(), "keep");
+        }
     }
 }

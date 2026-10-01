@@ -19,11 +19,13 @@ static ENV_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mu
 #[tokio::test]
 async fn jsonl_pipe_survives_sandbox_exec() {
     let _guard = ENV_LOCK.lock().await;
-    let app_data = tempfile::tempdir().unwrap();
+    let app_data_tmp = tempfile::tempdir().unwrap();
+    // build_profile 要求可写路径已规范化（/var -> /private/var）。
+    let app_data = std::fs::canonicalize(app_data_tmp.path()).unwrap();
 
     // 受限（deny_network=true）profile：与 open_app 在 macOS 上对第三方应用的
     // 实际用法一致；本用例不涉及网络，禁网与否不影响管道本身是否通畅。
-    let sp = build_profile(app_data.path(), &[], &[], &[], true, None).unwrap();
+    let sp = build_profile(&app_data, &[], &[], &[], true, None).unwrap();
     let inner = vec![
         env!("CARGO_BIN_EXE_mock_pi").to_string(),
         "--mode".to_string(),
@@ -32,7 +34,7 @@ async fn jsonl_pipe_survives_sandbox_exec() {
     let argv = sandbox_exec_argv(&sp, &inner);
 
     let (session, mut rx) =
-        RpcSession::spawn_wrapped("/usr/bin/sandbox-exec", argv, app_data.path(), vec![], None)
+        RpcSession::spawn_wrapped("/usr/bin/sandbox-exec", argv, &app_data, vec![], None)
             .await
             .expect("经 sandbox-exec 包 mock_pi 应能 spawn 成功");
 
@@ -67,9 +69,11 @@ async fn jsonl_pipe_survives_sandbox_exec() {
 async fn jsonl_pipe_survives_sandbox_exec_for_ui_emit() {
     let _guard = ENV_LOCK.lock().await;
     std::env::set_var("MOCK_PI_MODE", "ui_emit");
-    let app_data = tempfile::tempdir().unwrap();
+    let app_data_tmp = tempfile::tempdir().unwrap();
+    // build_profile 要求可写路径已规范化（/var -> /private/var）。
+    let app_data = std::fs::canonicalize(app_data_tmp.path()).unwrap();
 
-    let sp = build_profile(app_data.path(), &[], &[], &[], true, None).unwrap();
+    let sp = build_profile(&app_data, &[], &[], &[], true, None).unwrap();
     let inner = vec![
         env!("CARGO_BIN_EXE_mock_pi").to_string(),
         "--mode".to_string(),
@@ -78,7 +82,7 @@ async fn jsonl_pipe_survives_sandbox_exec_for_ui_emit() {
     let argv = sandbox_exec_argv(&sp, &inner);
 
     let (session, mut rx) =
-        RpcSession::spawn_wrapped("/usr/bin/sandbox-exec", argv, app_data.path(), vec![], None)
+        RpcSession::spawn_wrapped("/usr/bin/sandbox-exec", argv, &app_data, vec![], None)
             .await
             .expect("经 sandbox-exec 包 mock_pi(ui_emit 模式) 应能 spawn 成功");
     session.send_prompt("买牛奶").await.unwrap();

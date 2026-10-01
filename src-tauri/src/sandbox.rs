@@ -254,9 +254,28 @@ pub fn build_profile(
     deny_network: bool,
     mcp_socket_path: Option<&std::path::Path>,
 ) -> Result<SandboxProfile, String> {
-    // 规范化 app_data（唯一可写路径，必须成功）
-    let write_path = std::fs::canonicalize(app_data)
-        .map_err(|e| format!("Failed to canonicalize app_data: {}", e))?;
+    // 可写路径（app_data 与 write_paths）：规范化结果必须等于传入路径本身。
+    // 这些目录在沙盒里是应用可写的，应用可以把其中某个目录改名、换成指向别处的符号链接；
+    // 若这里直接采用 canonicalize 的结果，宿主下一次（退避重启）重新构建 profile 时就会把
+    // 链接目标授权为可写——沙盒逃逸。要求「规范化 == 传入的字面路径」后，Seatbelt 按字面
+    // subpath 匹配：之后（含“校验后、拉起前”的竞态窗口）再被换成链接，写入会解析到规则
+    // 之外而被拒。传入方必须传已规范化的真实目录（见 `DataLayout::private_dir`）。
+    // 只读/runtime 路径应用不可写，保持原有「规范化或回退」行为。
+    fn canonical_literal(
+        path: &std::path::Path,
+        label: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let canon = std::fs::canonicalize(path)
+            .map_err(|e| format!("Failed to canonicalize {} path {:?}: {}", label, path, e))?;
+        if canon != path {
+            return Err(format!(
+                "可写路径不是预期的真实目录（可能被替换成了符号链接）：{:?} 规范化为 {:?}",
+                path, canon
+            ));
+        }
+        Ok(canon)
+    }
+    let write_path = canonical_literal(app_data, "app_data")?;
     let write_path_str = write_path.to_string_lossy().to_string();
 
     // 检查危险字符
@@ -317,7 +336,12 @@ pub fn build_profile(
     }
 
     for (i, wpath) in write_paths.iter().enumerate() {
-        let path_str = canonicalize_or_fallback(wpath, "Write", i)?;
+        let path_str = canonical_literal(wpath, "Write")?
+            .to_string_lossy()
+            .to_string();
+        if path_str.contains('"') || path_str.contains('\\') || path_str.contains('\0') {
+            return Err(format!("Write path {} contains dangerous characters", i));
+        }
         all_canonical_paths.push(std::path::PathBuf::from(&path_str));
         let key = format!("WRITE_{}", i);
         extra_write_keys.push(key.clone());
@@ -419,6 +443,11 @@ pub fn sandbox_exec_argv(profile: &SandboxProfile, inner: &[String]) -> Vec<Stri
 
 #[cfg(test)]
 mod tests {
+    /// build_profile 要求可写路径已规范化（macOS 的临时目录在 /var 下，规范化为 /private/var）。
+    fn canon(p: &std::path::Path) -> std::path::PathBuf {
+        std::fs::canonicalize(p).unwrap()
+    }
+
     use super::*;
 
     /// 检验 render_profile 包含必要的 SBPL 语法、参数引用、network 拒绝
@@ -482,7 +511,7 @@ mod tests {
     #[test]
     fn build_profile_canonicalizes_and_params() {
         let d = tempfile::tempdir().unwrap();
-        let sp = build_profile(d.path(), &[], &[], &[], true, None).unwrap();
+        let sp = build_profile(&canon(d.path()), &[], &[], &[], true, None).unwrap();
         assert!(sp
             .params
             .iter()
@@ -495,7 +524,7 @@ mod tests {
     fn build_profile_rejects_dangerous_path() {
         let d = tempfile::tempdir().unwrap();
         let bad = std::path::PathBuf::from("/tmp/a\"b");
-        assert!(build_profile(d.path(), &[bad], &[], &[], true, None).is_err());
+        assert!(build_profile(&canon(d.path()), &[bad], &[], &[], true, None).is_err());
     }
 
     /// 检验 build_profile 对 runtime_paths 做同样的 canonicalize + 参数映射（键前缀
@@ -504,7 +533,15 @@ mod tests {
     fn build_profile_handles_runtime_paths() {
         let d = tempfile::tempdir().unwrap();
         let rt = tempfile::tempdir().unwrap();
-        let sp = build_profile(d.path(), &[], &[], &[rt.path().to_path_buf()], true, None).unwrap();
+        let sp = build_profile(
+            &canon(d.path()),
+            &[],
+            &[],
+            &[rt.path().to_path_buf()],
+            true,
+            None,
+        )
+        .unwrap();
         assert!(sp
             .params
             .iter()
@@ -519,7 +556,71 @@ mod tests {
     fn build_profile_rejects_dangerous_runtime_path() {
         let d = tempfile::tempdir().unwrap();
         let bad = std::path::PathBuf::from("/tmp/rt\"evil");
-        assert!(build_profile(d.path(), &[], &[], &[bad], true, None).is_err());
+        assert!(build_profile(&canon(d.path()), &[], &[], &[bad], true, None).is_err());
+    }
+
+    // --- 可写路径必须是「规范化后等于自身」的真实目录（C1） --------------------
+
+    /// 可写路径（write_paths）是指向别处的符号链接：规范化结果 != 传入路径，必须 Err，
+    /// 否则 Seatbelt 规则会授权到链接目标（沙盒应用可自己换链接后让宿主重启时重新授权）。
+    #[test]
+    fn build_profile_rejects_symlinked_write_path() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let app_data = root.join("app");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&app_data).unwrap();
+        std::fs::create_dir_all(&victim).unwrap();
+        let link = root.join("sessions-a");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let err = match build_profile(&app_data, &[], &[link], &[], true, None) {
+            Err(e) => e,
+            Ok(_) => panic!("符号链接可写路径必须被拒"),
+        };
+        assert!(err.contains("符号链接"), "{err}");
+    }
+
+    /// app_data 是指向别处的符号链接：同样必须 Err。
+    #[test]
+    fn build_profile_rejects_symlinked_app_data() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        let link = root.join("apps-a");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(build_profile(&link, &[], &[], &[], true, None).is_err());
+    }
+
+    /// 可写路径本身是真实目录但传入的是未规范化形式（经由符号链接祖先）：同样拒绝，
+    /// 调用方必须传已规范化的字面路径。
+    #[test]
+    fn build_profile_rejects_write_path_via_symlinked_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let app_data = root.join("app");
+        std::fs::create_dir_all(&app_data).unwrap();
+        let real = root.join("real");
+        std::fs::create_dir_all(real.join("w")).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("alias")).unwrap();
+        let via_alias = root.join("alias").join("w");
+        assert!(build_profile(&app_data, &[], &[via_alias], &[], true, None).is_err());
+    }
+
+    /// 已规范化的真实目录照常放行，参数里是字面路径。
+    #[test]
+    fn build_profile_accepts_canonical_write_path() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let app_data = root.join("app");
+        let w = root.join("w");
+        std::fs::create_dir_all(&app_data).unwrap();
+        std::fs::create_dir_all(&w).unwrap();
+        let sp = build_profile(&app_data, &[], std::slice::from_ref(&w), &[], true, None).unwrap();
+        assert!(sp
+            .params
+            .iter()
+            .any(|(k, v)| k == "WRITE_0" && v == &w.to_string_lossy()));
     }
 
     // --- strict_ancestors ----------------------------------------------------
@@ -560,7 +661,7 @@ mod tests {
     #[test]
     fn build_profile_emits_ancestor_metadata_literals_not_global_allow() {
         let d = tempfile::tempdir().unwrap();
-        let sp = build_profile(d.path(), &[], &[], &[], true, None).unwrap();
+        let sp = build_profile(&canon(d.path()), &[], &[], &[], true, None).unwrap();
         assert!(
             !sp.profile.contains("(allow file-read-metadata)"),
             "不应再有全局放行"
@@ -581,7 +682,7 @@ mod tests {
     #[test]
     fn build_profile_dedupes_shared_ancestors() {
         let parent = tempfile::tempdir().unwrap();
-        let app_data = parent.path().join("app");
+        let app_data = canon(parent.path()).join("app");
         let read_dir = parent.path().join("read");
         std::fs::create_dir_all(&app_data).unwrap();
         std::fs::create_dir_all(&read_dir).unwrap();
@@ -659,7 +760,7 @@ mod tests {
         // （见 build_profile 文档）；用真实 unix socket bind 出来，而不是普通文件，
         // 更贴近真实调用场景（Task9b McpSocketListener 已经 bind 过）。
         let _listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
-        let sp = build_profile(d.path(), &[], &[], &[], true, Some(&sock_path)).unwrap();
+        let sp = build_profile(&canon(d.path()), &[], &[], &[], true, Some(&sock_path)).unwrap();
         let canon = std::fs::canonicalize(&sock_path)
             .unwrap()
             .to_string_lossy()
@@ -679,7 +780,7 @@ mod tests {
     #[test]
     fn build_profile_no_mcp_socket_is_unchanged_from_pre_task9c_shape() {
         let d = tempfile::tempdir().unwrap();
-        let sp = build_profile(d.path(), &[], &[], &[], true, None).unwrap();
+        let sp = build_profile(&canon(d.path()), &[], &[], &[], true, None).unwrap();
         assert!(!sp.params.iter().any(|(k, _)| k == "MCP_SOCK"));
         assert!(!sp.profile.contains("network-outbound"));
     }
@@ -693,7 +794,7 @@ mod tests {
         let sock_dir = tempfile::tempdir().unwrap();
         let bad_path = sock_dir.path().join("mcp\"evil.sock");
         let _listener = std::os::unix::net::UnixListener::bind(&bad_path).unwrap();
-        assert!(build_profile(d.path(), &[], &[], &[], true, Some(&bad_path)).is_err());
+        assert!(build_profile(&canon(d.path()), &[], &[], &[], true, Some(&bad_path)).is_err());
     }
 
     /// build_profile 对一个不存在的 mcp_socket_path 应直接报错（Err），而不是静默
@@ -703,6 +804,6 @@ mod tests {
     fn build_profile_rejects_nonexistent_mcp_socket_path() {
         let d = tempfile::tempdir().unwrap();
         let missing = std::path::PathBuf::from("/tmp/does-not-exist-mcp-sock-9c/mcp.sock");
-        assert!(build_profile(d.path(), &[], &[], &[], true, Some(&missing)).is_err());
+        assert!(build_profile(&canon(d.path()), &[], &[], &[], true, Some(&missing)).is_err());
     }
 }

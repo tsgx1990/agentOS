@@ -162,11 +162,74 @@ impl DataLayout {
         self.root.join("model-overrides.json")
     }
 
+    /// 取得该应用的一个「应用可写」私有目录（`kind` 为 `apps` / `agenthome` / `sessions`
+    /// 之一），返回**已规范化的字面路径**：`<canonical(root)>/<kind>/<app_id>`。
+    ///
+    /// 这三个目录都在沙盒里对应用可写，应用可以把其中某个目录改名、再放一个指向别处的
+    /// 符号链接顶替。宿主在沙盒外面对这些路径做任何写操作、或把它们授权给下一次沙盒，
+    /// 都必须先经过这里：
+    /// - 已存在但不是真目录（符号链接、普通文件）→ Err，绝不跟随；
+    /// - 不存在才创建；
+    /// - 最后确认 `canonicalize == 预期字面路径`，不等 → Err。
+    ///
+    /// 数据根本身由宿主控制（应用不可写），每次在这里规范化一次，保证返回的路径可直接
+    /// 交给 `sandbox::build_profile`（它要求可写路径「规范化后等于自身」）。
+    pub fn private_dir(&self, kind: &str, app_id: &str) -> Result<PathBuf, String> {
+        if !matches!(kind, "apps" | "agenthome" | "sessions") {
+            return Err(format!("未知的私有目录类别：{kind}"));
+        }
+        if app_id.is_empty()
+            || app_id == "."
+            || app_id == ".."
+            || app_id.contains(['/', '\\', '\0'])
+        {
+            return Err(format!("非法的应用 id：{app_id:?}"));
+        }
+        std::fs::create_dir_all(&self.root).map_err(|e| format!("无法创建数据根：{e}"))?;
+        let root =
+            std::fs::canonicalize(&self.root).map_err(|e| format!("无法规范化数据根：{e}"))?;
+        let parent = root.join(kind);
+        std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+        let expected = parent.join(app_id);
+        let not_real = |what: &str| {
+            format!(
+                "私有目录不是真实目录（{what}，可能被替换成了符号链接或文件），拒绝使用：{}",
+                expected.display()
+            )
+        };
+        match std::fs::symlink_metadata(&expected) {
+            Ok(m) if m.file_type().is_dir() => {}
+            Ok(m) if m.file_type().is_symlink() => return Err(not_real("符号链接")),
+            Ok(_) => return Err(not_real("非目录")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::create_dir(&expected) {
+                    Ok(()) => {}
+                    // 并发创建：再确认一次它是真目录。
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let m = std::fs::symlink_metadata(&expected).map_err(|e| e.to_string())?;
+                        if !m.file_type().is_dir() {
+                            return Err(not_real("非真实目录"));
+                        }
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+        let canon = std::fs::canonicalize(&expected).map_err(|e| e.to_string())?;
+        if canon != expected {
+            return Err(not_real("规范化后路径不一致"));
+        }
+        Ok(expected)
+    }
+
     /// 创建应用程序所需的目录结构
-    /// 包括: apps/<app_id>, sessions/<app_id>, state 父目录
+    /// 包括: apps/<app_id>, sessions/<app_id>（经 `private_dir`，不跟随链接）, state 父目录
     pub fn ensure_app(&self, app_id: &str) -> std::io::Result<()> {
-        std::fs::create_dir_all(self.app_data_dir(app_id))?;
-        std::fs::create_dir_all(self.session_dir(app_id))?;
+        self.private_dir("apps", app_id)
+            .map_err(std::io::Error::other)?;
+        self.private_dir("sessions", app_id)
+            .map_err(std::io::Error::other)?;
         if let Some(p) = self.state_path(app_id).parent() {
             std::fs::create_dir_all(p)?;
         }
@@ -352,5 +415,60 @@ mod tests {
         let staging_dir = l.maker_staging_dir("draft-abc");
         // The staging_dir should be staging_root joined with the draft_id
         assert_eq!(staging_dir, staging_root.join("draft-abc"));
+    }
+
+    // --- private_dir（C1 宿主侧收口） ---------------------------------------
+
+    #[test]
+    fn private_dir_creates_real_dir_and_returns_canonical_literal() {
+        let tmp = tempdir().unwrap();
+        let l = DataLayout::new(tmp.path().to_path_buf());
+        for kind in ["apps", "agenthome", "sessions"] {
+            let p = l.private_dir(kind, "a").unwrap();
+            assert!(p.is_dir());
+            assert_eq!(std::fs::canonicalize(&p).unwrap(), p);
+            assert!(p.ends_with(format!("{kind}/a")));
+        }
+        // 幂等
+        assert!(l.private_dir("apps", "a").is_ok());
+    }
+
+    #[test]
+    fn private_dir_rejects_symlink_and_file_without_touching_target() {
+        let tmp = tempdir().unwrap();
+        let l = DataLayout::new(tmp.path().to_path_buf());
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        for kind in ["apps", "agenthome", "sessions"] {
+            std::fs::create_dir_all(tmp.path().join(kind)).unwrap();
+            std::os::unix::fs::symlink(&victim, tmp.path().join(kind).join("a")).unwrap();
+            let e = l.private_dir(kind, "a").unwrap_err();
+            assert!(e.contains("符号链接"), "{e}");
+            // 普通文件
+            std::fs::write(tmp.path().join(kind).join("f"), b"x").unwrap();
+            assert!(l.private_dir(kind, "f").is_err());
+        }
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn private_dir_rejects_bad_kind_and_app_id() {
+        let tmp = tempdir().unwrap();
+        let l = DataLayout::new(tmp.path().to_path_buf());
+        assert!(l.private_dir("packages", "a").is_err());
+        for bad in ["", ".", "..", "a/b", "../x"] {
+            assert!(l.private_dir("apps", bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn ensure_app_does_not_follow_swapped_link() {
+        let tmp = tempdir().unwrap();
+        let l = DataLayout::new(tmp.path().to_path_buf());
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::create_dir_all(tmp.path().join("sessions")).unwrap();
+        std::os::unix::fs::symlink(&victim, tmp.path().join("sessions/a")).unwrap();
+        assert!(l.ensure_app("a").is_err());
     }
 }
