@@ -89,11 +89,12 @@ test("保存密钥调用 set_api_key（provider 为所选），随后清空输�
   expect(screen.queryByDisplayValue("sk-test-fake")).toBeNull();
 });
 
-test("清除密钥调用 clear_api_key", async () => {
+test("清除没人在用的 provider 的密钥：直接调用 clear_api_key，不弹确认", async () => {
   await mount();
-  pick("DeepSeek 深度求索");
+  pick("我的自建服务");
   fireEvent.click(screen.getByRole("button", { name: "清除" }));
-  await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("clear_api_key", { provider: "deepseek" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("clear_api_key", { provider: "custom-empty" }));
 });
 
 test("测试失败渲染 message；测试按钮旁有费用提示", async () => {
@@ -122,7 +123,7 @@ test("测试成功渲染延迟", async () => {
   await screen.findByText("312 ms");
 });
 
-test("新增自定义：id 自动加 custom- 前缀并调用 save_custom_provider", async () => {
+test("新增自定义：id 自动加 custom- 前缀并调用 create_custom_provider（新建不走覆盖路径）", async () => {
   await mount();
   fireEvent.click(screen.getByRole("button", { name: /其它（OpenAI 兼容）/ }));
   fireEvent.change(screen.getByLabelText("服务 ID"), { target: { value: "mine" } });
@@ -131,7 +132,7 @@ test("新增自定义：id 自动加 custom- 前缀并调用 save_custom_provide
   fireEvent.change(screen.getByLabelText("模型 id（逗号分隔）"), { target: { value: "m-1, m-2" } });
   fireEvent.click(screen.getByRole("button", { name: "添加服务" }));
   await waitFor(() =>
-    expect(invokeMock).toHaveBeenCalledWith("save_custom_provider", {
+    expect(invokeMock).toHaveBeenCalledWith("create_custom_provider", {
       provider: {
         id: "custom-mine",
         display: "我的服务",
@@ -227,4 +228,112 @@ test("保存新密钥后清掉该 provider 上一次的测试结果", async () =
   fireEvent.change(screen.getByLabelText("API 密钥"), { target: { value: "sk-test-fake" } });
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(screen.queryByText("密钥无效或已被撤销")).toBeNull());
+});
+
+test("新建自定义服务撞已有 id：展示后端的错误，不收起表单", async () => {
+  const base = invokeMock.getMockImplementation()!;
+  invokeMock.mockImplementation((cmd: string, ...r: unknown[]) =>
+    cmd === "create_custom_provider" ? Promise.reject("这个服务 id 已存在：custom-empty") : base(cmd, ...r));
+  await mount();
+  fireEvent.click(screen.getByRole("button", { name: /其它（OpenAI 兼容）/ }));
+  fireEvent.change(screen.getByLabelText("服务 ID"), { target: { value: "empty" } });
+  fireEvent.change(screen.getByLabelText("显示名"), { target: { value: "x" } });
+  fireEvent.change(screen.getByLabelText("接口地址（base URL）"), { target: { value: "https://evil.example.com/v1" } });
+  fireEvent.click(screen.getByRole("button", { name: "添加服务" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("已存在");
+  expect(screen.getByLabelText("服务 ID")).toBeTruthy();
+});
+
+test("修改已有自定义服务的 base_url：先确认，确认后才调用 save_custom_provider", async () => {
+  await mount();
+  pick("我的自建服务");
+  fireEvent.click(screen.getByRole("button", { name: "修改此服务" }));
+  expect((screen.getByLabelText("服务 ID") as HTMLInputElement).disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText("接口地址（base URL）"), { target: { value: "https://other.example.com/v1" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  expect(screen.getByText("改地址后密钥会发往新地址，确定？")).toBeTruthy();
+  expect(invokeMock).not.toHaveBeenCalledWith("save_custom_provider", expect.anything());
+  fireEvent.click(screen.getByRole("button", { name: "确定修改" }));
+  await waitFor(() =>
+    expect(invokeMock).toHaveBeenCalledWith("save_custom_provider", {
+      provider: expect.objectContaining({ id: "custom-empty", base_url: "https://other.example.com/v1" }),
+    }),
+  );
+});
+
+test("修改自定义服务但不改地址：不需要确认", async () => {
+  await mount();
+  pick("我的自建服务");
+  fireEvent.click(screen.getByRole("button", { name: "修改此服务" }));
+  fireEvent.change(screen.getByLabelText("显示名"), { target: { value: "改名" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("save_custom_provider", expect.anything()));
+});
+
+test("删除自定义服务：先出确认，确认后才调用 remove_custom_provider", async () => {
+  await mount();
+  pick("我的自建服务");
+  fireEvent.click(screen.getByRole("button", { name: "删除此自定义服务" }));
+  expect(screen.getByText(/钥匙串里的密钥也会一并删除/)).toBeTruthy();
+  expect(invokeMock).not.toHaveBeenCalledWith("remove_custom_provider", expect.anything());
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(invokeMock).not.toHaveBeenCalledWith("remove_custom_provider", expect.anything());
+  fireEvent.click(screen.getByRole("button", { name: "删除此自定义服务" }));
+  fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+  await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("remove_custom_provider", { id: "custom-empty" }));
+});
+
+test("两个 provider 同时在测：先结束的那个不让另一个的按钮解锁", async () => {
+  const resolvers: Record<string, (v: unknown) => void> = {};
+  const base = invokeMock.getMockImplementation()!;
+  invokeMock.mockImplementation((cmd: string, args: { provider?: string }) =>
+    cmd === "test_provider"
+      ? new Promise((res) => { resolvers[args.provider!] = res; })
+      : base(cmd, args));
+  await mount();
+  pick("DeepSeek 深度求索");
+  fireEvent.click(screen.getByRole("button", { name: "测试连通性" }));
+  pick("^Anthropic");
+  fireEvent.click(screen.getByRole("button", { name: "测试连通性" }));
+  await waitFor(() => expect(Object.keys(resolvers).sort()).toEqual(["anthropic", "deepseek"]));
+  resolvers.anthropic(PROBE_OK);
+  await screen.findByText("312 ms");
+  pick("DeepSeek 深度求索");
+  const btn = screen.getByRole("button", { name: "测试中…" }) as HTMLButtonElement;
+  expect(btn.disabled).toBe(true);
+  resolvers.deepseek(PROBE_OK);
+  await waitFor(() => expect((screen.getByRole("button", { name: "测试连通性" }) as HTMLButtonElement).disabled).toBe(false));
+});
+
+test("清除正被默认模型 / 应用覆盖使用的 provider 的密钥：先确认并写明谁在用", async () => {
+  await mount();
+  pick("DeepSeek 深度求索"); // 被 code-reviewer 的覆盖使用
+  fireEvent.click(screen.getByRole("button", { name: "清除" }));
+  expect(screen.getByRole("alertdialog").textContent).toContain("应用 code-reviewer正在用它，清除后这些会话将无法调用模型");
+  expect(invokeMock).not.toHaveBeenCalledWith("clear_api_key", expect.anything());
+  fireEvent.click(screen.getByRole("button", { name: "确认清除" }));
+  await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("clear_api_key", { provider: "deepseek" }));
+});
+
+test("清除全局默认所用 provider 的密钥：确认文案含「默认模型」", async () => {
+  await mount();
+  pick("^Anthropic");
+  fireEvent.click(screen.getByRole("button", { name: "清除" }));
+  expect(screen.getByRole("alertdialog").textContent).toContain("默认模型正在用它");
+});
+
+test("全局默认指向未配置的 provider：默认模型处显示告警", async () => {
+  const base = invokeMock.getMockImplementation()!;
+  invokeMock.mockImplementation((cmd: string, ...r: unknown[]) =>
+    cmd === "get_model_settings"
+      ? Promise.resolve({ ...SETTINGS, global: { provider: "openai", model: "gpt-5.5" } })
+      : base(cmd, ...r));
+  await mount();
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("未配置密钥"));
+  expect(screen.getByRole("alert").textContent).toContain("OpenAI");
+});
+
+test("全局默认指向已配置的 provider：没有告警", async () => {
+  await mount();
+  expect(screen.queryByRole("alert")).toBeNull();
 });

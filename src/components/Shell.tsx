@@ -95,13 +95,19 @@ export function Shell() {
   const [approvals, setApprovals] = useState(false);
   const [skills, setSkills] = useState(false);
   const [hasKey, setHasKey] = useState<boolean | null>(null);
+  // list_providers 报错（如 providers.json 损坏）：不能当成「没有 key」把人锁进向导，
+  // 也不会让向导在每次启动都出现——按非首次启动处理，错误在「模型与密钥」页展示。
+  const [providersErr, setProvidersErr] = useState<string | null>(null);
 
   const refresh = () => listApps().then(setApps).catch(() => setApps([]));
   useEffect(() => { refresh(); }, []);
   useEffect(() => {
     listProviders()
       .then((ps) => setHasKey(ps.some((p) => p.configured)))
-      .catch(() => setHasKey(false));
+      .catch((e) => {
+        setProvidersErr(String(e));
+        setHasKey(true);
+      });
   }, []);
 
   useEffect(() => {
@@ -144,6 +150,11 @@ export function Shell() {
     <div className="shell">
       <NavRail apps={apps} />
       <main className="shell-center">
+        {providersErr && !modelSettings && (
+          <p className="shell-warn" role="alert">
+            读取模型服务配置失败，请到「模型与密钥」查看并修复：{providersErr}
+          </p>
+        )}
         {uninstalling ? (
           <UninstallDialog
             appId={uninstalling}

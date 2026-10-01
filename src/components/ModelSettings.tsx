@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ModelSettingsView, type OtherUsageRow } from "./ModelSettingsView";
 import { clearApiKey, setApiKey } from "../lib/keys";
 import {
+  createCustomProvider,
   customProviderPresets,
   getModelSettings,
   listProviders,
@@ -34,7 +35,8 @@ export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
   const [usageRows, setUsageRows] = useState<ModelUsageRow[]>([]);
   const [otherUsage, setOtherUsage] = useState<OtherUsageRow[]>([]);
   const [probes, setProbes] = useState<Record<string, ProbeReport>>({});
-  const [testingId, setTestingId] = useState<string | null>(null);
+  // 按 provider 记录：一个测完不解锁另一个。
+  const [testingIds, setTestingIds] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -98,7 +100,7 @@ export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
     });
 
   async function onTest(id: string, model: string) {
-    setTestingId(id);
+    setTestingIds((t) => (t.includes(id) ? t : [...t, id]));
     try {
       const report = await testProvider(id, model);
       setProbes((m) => ({ ...m, [id]: report }));
@@ -108,7 +110,7 @@ export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
         [id]: { ok: false, kind: "other", latency_ms: 0, provider: id, model, message: String(e), detail: "" },
       }));
     } finally {
-      setTestingId(null);
+      setTestingIds((t) => t.filter((x) => x !== id));
     }
   }
 
@@ -122,6 +124,13 @@ export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
     void run(async () => {
       await setAppModel(appId, choice);
       await refreshSettings();
+    });
+
+  const onCreateCustom = (provider: CustomProvider) =>
+    run(async () => {
+      await createCustomProvider(provider);
+      await refreshProviders();
+      setSelectedId(provider.id);
     });
 
   const onSaveCustom = (provider: CustomProvider) =>
@@ -147,7 +156,7 @@ export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
       usageRows={usageRows}
       otherUsage={otherUsage}
       probeResults={probes}
-      testingId={testingId}
+      testingIds={testingIds}
       selectedId={selectedId}
       error={error}
       onClose={onClose}
@@ -157,6 +166,7 @@ export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
       onTest={onTest}
       onSetGlobal={onSetGlobal}
       onSetAppOverride={onSetAppOverride}
+      onCreateCustom={onCreateCustom}
       onSaveCustom={onSaveCustom}
       onRemoveCustom={onRemoveCustom}
     />

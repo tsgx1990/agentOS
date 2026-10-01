@@ -498,3 +498,35 @@
   align-items: baseline;
   gap: 2px 8px;
 }
+
+.ms-confirm {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-nav-item);
+  font-size: 13px;
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+}
+.ms-confirm p {
+  margin: 0 0 8px;
+}
+.ms-btn-danger-solid {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: var(--text-on-accent);
+}
+.ms-warn {
+  flex-basis: 100%;
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-nav-item);
+  font-size: 12px;
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+}
+.ms-custom-actions {
+  margin-top: 12px;
+}
+.ms-custom-actions .ms-btn-danger {
+  margin-top: 0;
+}

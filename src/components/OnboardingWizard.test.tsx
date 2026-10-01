@@ -89,12 +89,37 @@ test("选 DeepSeek → set_api_key → test_provider → 尚无全局默认则 s
   await waitFor(() => expect(screen.getByText(/起步应用/)).toBeTruthy());
 });
 
-test("已有全局默认时不覆盖它", async () => {
-  setup({ get_model_settings: () => Promise.resolve({ global: { provider: "openai", model: "gpt-5.5" }, apps: [] }) });
+test("全局默认指向已配置的 provider 时不覆盖它", async () => {
+  setup({
+    list_providers: () => Promise.resolve(PROVIDERS.map((p) => (p.id === "openai" ? { ...p, configured: true } : p))),
+    get_model_settings: () => Promise.resolve({ global: { provider: "openai", model: "gpt-5.5" }, apps: [] }),
+  });
   render(<OnboardingWizard onComplete={() => {}} />);
   await saveWith(/DeepSeek/, "sk-test-key");
   await waitFor(() => expect(screen.getByText(/起步应用/)).toBeTruthy());
   expect(invokeMock).not.toHaveBeenCalledWith("set_global_model", expect.anything());
+});
+
+test("全局默认指向未配置的 provider（残留）时，覆盖为向导所选服务", async () => {
+  setup({ get_model_settings: () => Promise.resolve({ global: { provider: "anthropic", model: "claude-sonnet-5" }, apps: [] }) });
+  render(<OnboardingWizard onComplete={() => {}} />);
+  await saveWith(/DeepSeek/, "sk-test-key");
+  await waitFor(() =>
+    expect(invokeMock).toHaveBeenCalledWith("set_global_model", {
+      choice: { provider: "deepseek", model: "deepseek-v4-flash" },
+    }),
+  );
+});
+
+test("全局默认指向已不存在的 provider 时，覆盖为向导所选服务", async () => {
+  setup({ get_model_settings: () => Promise.resolve({ global: { provider: "ghost", model: "m" }, apps: [] }) });
+  render(<OnboardingWizard onComplete={() => {}} />);
+  await saveWith(/DeepSeek/, "sk-test-key");
+  await waitFor(() =>
+    expect(invokeMock).toHaveBeenCalledWith("set_global_model", {
+      choice: { provider: "deepseek", model: "deepseek-v4-flash" },
+    }),
+  );
 });
 
 test("连通性测试失败 → 显示 message，「重新填写」留在本步，「仍然继续」可进入下一步", async () => {

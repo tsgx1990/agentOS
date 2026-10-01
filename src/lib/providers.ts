@@ -93,6 +93,12 @@ export function listProviders(): Promise<ProviderInfo[]> {
   return invoke("list_providers");
 }
 
+/** 新建自定义服务；id 已存在时后端报错（不覆盖）。 */
+export function createCustomProvider(provider: CustomProvider): Promise<void> {
+  return invoke("create_custom_provider", { provider });
+}
+
+/** 修改已有自定义服务（改 base_url 前调用方须先让用户确认）。 */
 export function saveCustomProvider(provider: CustomProvider): Promise<void> {
   return invoke("save_custom_provider", { provider });
 }

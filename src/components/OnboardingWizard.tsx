@@ -72,10 +72,17 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const selected = providers?.find((x) => x.id === selectedId) ?? null;
   const testModel = selected?.presets[0] ?? "";
 
-  /** 尚无全局默认时，把所选服务的首个预设设为默认；已有就不覆盖。 */
+  /**
+   * 全局默认为空、或它指向的 provider 当前不可用（未配置 / 已不存在）时，把所选
+   * 服务的首个预设设为默认；指向一个可用 provider（含刚存了 key 的所选服务本身）
+   * 就不覆盖。向导只在没有任何 provider 配了 key 时出现，残留的默认必然指向没 key
+   * 的服务，不覆盖会让所有会话失败。
+   */
   async function ensureDefault(p: ProviderInfo) {
     const s = await getModelSettings();
-    if (!s.global && p.presets[0]) await setGlobalModel({ provider: p.id, model: p.presets[0] });
+    const g = s.global;
+    const usable = g && (g.provider === p.id || providers?.find((x) => x.id === g.provider)?.configured === true);
+    if (!usable && p.presets[0]) await setGlobalModel({ provider: p.id, model: p.presets[0] });
   }
 
   async function saveKey() {

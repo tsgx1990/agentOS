@@ -1558,6 +1558,7 @@ pub fn run() {
             secrets::has_api_key,
             secrets::clear_api_key,
             providers::list_providers,
+            providers::create_custom_provider,
             providers::save_custom_provider,
             providers::remove_custom_provider,
             providers::custom_provider_presets,

@@ -13,6 +13,8 @@ export interface ProviderDetailProps {
   /** 返回 true 表示已保存；组件据此清空密钥输入框（失败时保留，方便改了重试） */
   onSaveKey: (id: string, key: string) => Promise<boolean>;
   onClearKey: (id: string) => void;
+  /** 正在使用该服务的默认模型 / 应用覆盖（如「默认模型」「应用 x」）；非空时清除密钥前要二次确认 */
+  usedBy?: string[];
   onTest: (id: string, model: string) => void;
 }
 
@@ -22,6 +24,8 @@ export function ProviderDetail(p: ProviderDetailProps) {
   const [model, setModel] = useState("");
   const activeModel = p.models.includes(model) ? model : (p.models[0] ?? "");
   const inputId = `ms-key-${p.id}`;
+  const [confirmClear, setConfirmClear] = useState(false);
+  const usedBy = p.usedBy ?? [];
 
   async function save() {
     if (await p.onSaveKey(p.id, draft.trim())) setDraft("");
@@ -60,11 +64,37 @@ export function ProviderDetail(p: ProviderDetailProps) {
           保存
         </button>
         {p.configured && (
-          <button type="button" className="ms-btn" onClick={() => p.onClearKey(p.id)}>
+          <button
+            type="button"
+            className="ms-btn"
+            onClick={() => (usedBy.length > 0 ? setConfirmClear(true) : p.onClearKey(p.id))}
+          >
             清除
           </button>
         )}
       </div>
+      {confirmClear && usedBy.length > 0 && (
+        <div className="ms-confirm" role="alertdialog" aria-label="确认清除密钥">
+          <p>
+            {usedBy.join("、")}正在用它，清除后这些会话将无法调用模型。确定清除密钥？
+          </p>
+          <div className="ms-row">
+            <button
+              type="button"
+              className="ms-btn ms-btn-danger-solid"
+              onClick={() => {
+                setConfirmClear(false);
+                p.onClearKey(p.id);
+              }}
+            >
+              确认清除
+            </button>
+            <button type="button" className="ms-btn" onClick={() => setConfirmClear(false)}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
       <p className="ms-hint">密钥只存系统钥匙串，不写入任何配置文件。</p>
 
       <label className="ms-field-label" htmlFor={`ms-model-${p.id}`}>

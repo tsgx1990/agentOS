@@ -308,12 +308,24 @@ impl ProvidersStore {
         crate::approvals::save_json_file(&self.path, &ProvidersFile { version: 1, custom })
     }
 
-    pub fn upsert(&self, p: CustomProvider) -> Result<(), String> {
+    /// 新建：id 已存在即 Err，绝不静默覆盖已有服务（覆盖会让它的钥匙串密钥被发往新地址）。
+    pub fn create(&self, p: CustomProvider) -> Result<(), String> {
+        let p = validate_custom(&p)?;
+        let mut all = self.list()?;
+        if all.iter().any(|x| x.id == p.id) {
+            return Err(format!("这个服务 id 已存在：{}", p.id));
+        }
+        all.push(p);
+        self.save(all)
+    }
+
+    /// 修改已有服务：id 不存在即 Err（新建走 `create`）。
+    pub fn update(&self, p: CustomProvider) -> Result<(), String> {
         let p = validate_custom(&p)?;
         let mut all = self.list()?;
         match all.iter_mut().find(|x| x.id == p.id) {
             Some(slot) => *slot = p,
-            None => all.push(p),
+            None => return Err(format!("这个服务不存在：{}", p.id)),
         }
         self.save(all)
     }
@@ -426,9 +438,19 @@ pub fn list_providers(app: tauri::AppHandle) -> Result<Vec<ProviderInfo>, String
     Ok(provider_infos(&custom, secrets::has_key))
 }
 
+/// 新建自定义 provider；id 已存在报错（不覆盖）。
+#[tauri::command]
+pub fn create_custom_provider(
+    app: tauri::AppHandle,
+    provider: CustomProvider,
+) -> Result<(), String> {
+    store(&app)?.create(provider)
+}
+
+/// 修改已有自定义 provider（改地址、模型等）；不存在报错。前端改 `base_url` 前须先让用户确认。
 #[tauri::command]
 pub fn save_custom_provider(app: tauri::AppHandle, provider: CustomProvider) -> Result<(), String> {
-    store(&app)?.upsert(provider)
+    store(&app)?.update(provider)
 }
 
 /// 删除自定义 provider，同时清掉它在钥匙串里的 Key。
@@ -545,18 +567,30 @@ mod tests {
     #[test]
     fn custom_provider_roundtrip_persists() {
         let (dir, store) = temp_store();
-        store.upsert(sample("custom-a")).unwrap();
+        store.create(sample("custom-a")).unwrap();
         let again = ProvidersStore::new(dir.path().join("providers.json"));
         assert_eq!(again.list().unwrap(), vec![sample("custom-a")]);
     }
 
     #[test]
-    fn upsert_same_id_replaces_not_duplicates() {
+    fn create_rejects_existing_id_and_keeps_original() {
         let (_d, store) = temp_store();
-        store.upsert(sample("custom-a")).unwrap();
+        store.create(sample("custom-a")).unwrap();
+        let mut other = sample("custom-a");
+        other.base_url = "https://evil.example.com/v1".to_string();
+        let err = store.create(other).unwrap_err();
+        assert!(err.contains("已存在"), "{err}");
+        assert_eq!(store.list().unwrap(), vec![sample("custom-a")]);
+    }
+
+    #[test]
+    fn update_requires_existing_id() {
+        let (_d, store) = temp_store();
+        assert!(store.update(sample("custom-a")).is_err());
+        store.create(sample("custom-a")).unwrap();
         let mut changed = sample("custom-a");
         changed.display = "改名".to_string();
-        store.upsert(changed.clone()).unwrap();
+        store.update(changed.clone()).unwrap();
         assert_eq!(store.list().unwrap(), vec![changed]);
     }
 
@@ -564,7 +598,7 @@ mod tests {
     fn remove_returns_false_for_unknown_id() {
         let (_d, store) = temp_store();
         assert!(!store.remove("custom-nope").unwrap());
-        store.upsert(sample("custom-a")).unwrap();
+        store.create(sample("custom-a")).unwrap();
         assert!(store.remove("custom-a").unwrap());
         assert!(store.list().unwrap().is_empty());
     }

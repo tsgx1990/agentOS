@@ -28,7 +28,8 @@ export interface ModelSettingsViewProps {
   otherUsage: OtherUsageRow[];
   /** key = provider id */
   probeResults: Record<string, ProbeReport>;
-  testingId?: string | null;
+  /** 正在测试的 provider id 集合（各自独立，互不解锁） */
+  testingIds?: string[];
   selectedId: string | null;
   error?: string | null;
   onClose?: () => void;
@@ -38,7 +39,9 @@ export interface ModelSettingsViewProps {
   onTest: (id: string, model: string) => void;
   onSetGlobal: (choice: ModelChoice | null) => void;
   onSetAppOverride: (appId: string, choice: ModelChoice | null) => void;
-  /** 返回 true 表示已保存（表单随即收起） */
+  /** 新建；id 已存在时后端报错。返回 true 表示已保存（表单随即收起） */
+  onCreateCustom: (provider: CustomProvider) => Promise<boolean>;
+  /** 修改已有服务；改了 base_url 时表单已先让用户确认 */
   onSaveCustom: (provider: CustomProvider) => Promise<boolean>;
   onRemoveCustom: (id: string) => void;
 }
@@ -137,8 +140,16 @@ function GlobalModelPicker(props: {
   const manual = manualOn || (current !== "" && !presets.includes(current));
   const typed = manualOn ? text : current;
 
+  const globalEntry = props.value ? props.entries.find((e) => e.id === props.value?.provider) : null;
+  const unusable = props.value !== null && !(globalEntry?.configured ?? false);
+
   return (
     <div className="ms-row ms-wrap ms-picker">
+      {unusable && props.value && (
+        <p className="ms-warn" role="alert">
+          当前默认模型所用的服务「{globalEntry?.display ?? props.value.provider}」未配置密钥，会话将无法调用模型。
+        </p>
+      )}
       <select
         aria-label="默认模型服务"
         value={providerId}
@@ -220,36 +231,53 @@ interface CustomForm {
 
 function CustomProviderForm(props: {
   initial: CustomForm;
+  /** 修改已有服务：id 锁定；改了接口地址要先确认 */
+  editing?: boolean;
   onSubmit: (p: CustomProvider) => Promise<boolean>;
   onCancel: () => void;
 }) {
   const [f, setF] = useState(props.initial);
+  const [confirming, setConfirming] = useState(false);
   const set = (k: keyof CustomForm) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   const slug = f.id.trim().toLowerCase().replace(/^custom-/, "");
   const ok = slug !== "" && f.display.trim() !== "" && f.baseUrl.trim() !== "";
+  const urlChanged = !!props.editing && f.baseUrl.trim() !== props.initial.baseUrl.trim();
+  const submit = () =>
+    props.onSubmit({
+      id: `custom-${slug}`,
+      display: f.display.trim(),
+      base_url: f.baseUrl.trim(),
+      api: "openai-completions",
+      models: f.models.split(/[,，\s]+/).filter(Boolean),
+    });
   return (
     <form
       className="ms-detail ms-custom-form"
       onSubmit={(e) => {
         e.preventDefault();
         if (!ok) return;
-        void props.onSubmit({
-          id: `custom-${slug}`,
-          display: f.display.trim(),
-          base_url: f.baseUrl.trim(),
-          api: "openai-completions",
-          models: f.models.split(/[,，\s]+/).filter(Boolean),
-        });
+        if (urlChanged && !confirming) {
+          setConfirming(true);
+          return;
+        }
+        setConfirming(false);
+        void submit();
       }}
     >
-      <h3>添加自定义服务</h3>
+      <h3>{props.editing ? "修改自定义服务" : "添加自定义服务"}</h3>
       <p className="ms-sub">任何 OpenAI 兼容接口。密钥添加后在右侧填写，同样只存系统钥匙串。</p>
       <label className="ms-field-label" htmlFor="ms-c-id">
         服务 ID
       </label>
       <div className="ms-row ms-idrow">
         <span className="ms-idprefix">custom-</span>
-        <input id="ms-c-id" value={f.id.replace(/^custom-/, "")} placeholder="例如 my-llm" onChange={set("id")} />
+        <input
+          id="ms-c-id"
+          value={f.id.replace(/^custom-/, "")}
+          placeholder="例如 my-llm"
+          disabled={props.editing}
+          onChange={set("id")}
+        />
       </div>
       <label className="ms-field-label" htmlFor="ms-c-name">
         显示名
@@ -269,9 +297,14 @@ function CustomProviderForm(props: {
       <div className="ms-row">
         <input id="ms-c-models" value={f.models} placeholder="例如 qwen-plus, qwen-max" onChange={set("models")} />
       </div>
+      {confirming && (
+        <div className="ms-confirm" role="alertdialog" aria-label="确认修改接口地址">
+          <p>改地址后密钥会发往新地址，确定？</p>
+        </div>
+      )}
       <div className="ms-row ms-form-actions">
         <button type="submit" className="ms-btn ms-btn-primary" disabled={!ok}>
-          添加服务
+          {confirming ? "确定修改" : props.editing ? "保存修改" : "添加服务"}
         </button>
         <button type="button" className="ms-btn" onClick={props.onCancel}>
           取消
@@ -287,7 +320,8 @@ const BLANK_FORM: CustomForm = { id: "", display: "", baseUrl: "", models: "" };
 
 export function ModelSettingsView(p: ModelSettingsViewProps) {
   const entries = buildEntries(p.providers);
-  const [form, setForm] = useState<CustomForm | null>(null);
+  const [form, setForm] = useState<(CustomForm & { editing?: boolean }) | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const selected = form ? null : (entries.find((e) => e.id === p.selectedId) ?? null);
   const nameOf = (id: string | null) => entries.find((e) => e.id === id)?.display ?? id ?? "";
 
@@ -298,6 +332,11 @@ export function ModelSettingsView(p: ModelSettingsViewProps) {
     if (!g) usageGroups.push((g = { provider: r.provider, rows: [] }));
     g.rows.push(r);
   }
+  /** 正在使用某 provider 的全局默认 / 应用覆盖，用于清除密钥前的提示。 */
+  const usedBy = (id: string): string[] => [
+    ...(p.settings.global?.provider === id ? ["默认模型"] : []),
+    ...p.settings.apps.filter((a) => a.app_override?.provider === id).map((a) => `应用 ${a.app_id}`),
+  ];
   const hasUsage = usageGroups.length > 0 || p.otherUsage.length > 0;
 
   return (
@@ -381,10 +420,11 @@ export function ModelSettingsView(p: ModelSettingsViewProps) {
           <div className="ms-pane">
             {form ? (
               <CustomProviderForm
-                key={form.id + form.baseUrl}
+                key={form.id + form.baseUrl + (form.editing ? "e" : "")}
                 initial={form}
+                editing={form.editing}
                 onSubmit={async (c) => {
-                  const ok = await p.onSaveCustom(c);
+                  const ok = await (form.editing ? p.onSaveCustom(c) : p.onCreateCustom(c));
                   if (ok) setForm(null);
                   return ok;
                 }}
@@ -400,15 +440,54 @@ export function ModelSettingsView(p: ModelSettingsViewProps) {
                   subtitle={selected.subtitle}
                   models={selected.models}
                   probe={p.probeResults[selected.id] ?? null}
-                  testing={p.testingId === selected.id}
+                  testing={(p.testingIds ?? []).includes(selected.id)}
+                  usedBy={usedBy(selected.id)}
                   onSaveKey={p.onSaveKey}
                   onClearKey={p.onClearKey}
                   onTest={p.onTest}
                 />
-                {selected.group === "custom" && (
-                  <button type="button" className="ms-btn ms-btn-danger" onClick={() => p.onRemoveCustom(selected.id)}>
-                    删除此自定义服务
-                  </button>
+                {selected.group === "custom" && confirmDelete !== selected.id && (
+                  <div className="ms-row ms-custom-actions">
+                    <button
+                      type="button"
+                      className="ms-btn"
+                      onClick={() => {
+                        const info = p.providers.find((x) => x.id === selected.id);
+                        setForm({
+                          id: selected.id.replace(/^custom-/, ""),
+                          display: selected.display,
+                          baseUrl: info?.base_url ?? "",
+                          models: selected.models.join(", "),
+                          editing: true,
+                        });
+                      }}
+                    >
+                      修改此服务
+                    </button>
+                    <button type="button" className="ms-btn ms-btn-danger" onClick={() => setConfirmDelete(selected.id)}>
+                      删除此自定义服务
+                    </button>
+                  </div>
+                )}
+                {selected.group === "custom" && confirmDelete === selected.id && (
+                  <div className="ms-confirm" role="alertdialog" aria-label="确认删除服务">
+                    <p>删除后，保存在系统钥匙串里的密钥也会一并删除，无法恢复。确定删除「{selected.display}」？</p>
+                    <div className="ms-row">
+                      <button
+                        type="button"
+                        className="ms-btn ms-btn-danger-solid"
+                        onClick={() => {
+                          setConfirmDelete(null);
+                          p.onRemoveCustom(selected.id);
+                        }}
+                      >
+                        确认删除
+                      </button>
+                      <button type="button" className="ms-btn" onClick={() => setConfirmDelete(null)}>
+                        取消
+                      </button>
+                    </div>
+                  </div>
                 )}
               </>
             ) : (

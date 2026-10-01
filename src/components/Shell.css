@@ -35,3 +35,12 @@
     display: none;
   }
 }
+
+.shell-warn {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-nav-item);
+  font-size: 13px;
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+}
