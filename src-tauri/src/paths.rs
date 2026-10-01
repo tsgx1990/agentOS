@@ -484,7 +484,10 @@ mod tests {
         assert!(ensure_real_dir(&root.join("l")).is_err());
         std::fs::write(root.join("f"), b"x").unwrap();
         assert!(ensure_real_dir(&root.join("f")).is_err());
-        assert_eq!(ensure_real_dir(&root.join("new")).unwrap(), root.join("new"));
+        assert_eq!(
+            ensure_real_dir(&root.join("new")).unwrap(),
+            root.join("new")
+        );
         assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
     }
 

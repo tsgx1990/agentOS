@@ -757,14 +757,20 @@ mod tests {
                 &layout,
             )
         };
-        assert_eq!(ok("good", "agent/persona.md")["ok"], serde_json::json!(true));
+        assert_eq!(
+            ok("good", "agent/persona.md")["ok"],
+            serde_json::json!(true)
+        );
         // 暂存目录本身是链接
         std::os::unix::fs::symlink(&victim, tmp.path().join("maker-staging/bad")).unwrap();
         assert_eq!(ok("bad", "package.json")["ok"], serde_json::json!(false));
         // 草稿内子目录是链接（预览会话里的应用可以这样放）
         let st = layout.checked_maker_staging_dir("sub").unwrap();
         std::os::unix::fs::symlink(&victim, st.join("agent")).unwrap();
-        assert_eq!(ok("sub", "agent/persona.md")["ok"], serde_json::json!(false));
+        assert_eq!(
+            ok("sub", "agent/persona.md")["ok"],
+            serde_json::json!(false)
+        );
         // 目标文件本身是指向受害文件的链接：被替换而不是被跟随
         std::fs::write(victim.join("f"), "VICTIM").unwrap();
         std::os::unix::fs::symlink(victim.join("f"), st.join("package.json")).unwrap();

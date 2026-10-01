@@ -2501,7 +2501,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&victim_m).unwrap(), "VICTIM-M");
     }
 
-
     fn test_handle(dir: &Path) -> crate::dirfd::DirHandle {
         let id = crate::dirfd::identity_of_real_dir(dir).unwrap();
         crate::dirfd::DirHandle::open_expecting(dir, id).unwrap()
@@ -2525,7 +2524,11 @@ mod tests {
         let settings = serde_json::json!({"packages": []});
         let models = serde_json::json!({"providers": {}});
         write_agent_home_files(&h, &settings, Some(&models)).unwrap();
-        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0, "受害目录被写入");
+        assert_eq!(
+            std::fs::read_dir(&victim).unwrap().count(),
+            0,
+            "受害目录被写入"
+        );
         assert!(moved.join("settings.json").exists());
         // 删除 models.json 同样只作用在原目录。
         std::fs::write(victim.join("models.json"), "VICTIM").unwrap();
@@ -2572,7 +2575,6 @@ mod tests {
         assert!(write_agent_home(&layout, "a", &settings, Some(&models)).is_err());
         assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
     }
-
 
     /// I-b：暂存目录（或其 agent home / session 子目录）被换成指向受害目录的链接后发起预览
     /// → 拒绝、受害目录无写入。校验发生在拉起子进程之前，不需要真实 pi。

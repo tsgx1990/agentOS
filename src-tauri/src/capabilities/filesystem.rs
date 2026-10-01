@@ -155,14 +155,21 @@ fn check_real_literal(spec: &str, var: &str, literal: &Path) -> Result<Option<bo
     let meta = match std::fs::symlink_metadata(literal) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("检查 {var} 下的路径 {} 失败：{e}", literal.display())),
+        Err(e) => {
+            return Err(format!(
+                "检查 {var} 下的路径 {} 失败：{e}",
+                literal.display()
+            ))
+        }
     };
     if meta.file_type().is_symlink() {
         return Err(not_real("是符号链接"));
     }
     match std::fs::canonicalize(literal) {
         Ok(c) if c == literal => Ok(Some(meta.is_dir())),
-        Ok(_) => Err(not_real("规范化后与预期路径不一致（路径中某一级是符号链接）")),
+        Ok(_) => Err(not_real(
+            "规范化后与预期路径不一致（路径中某一级是符号链接）",
+        )),
         Err(e) => Err(format!("规范化 {} 失败：{e}", literal.display())),
     }
 }
@@ -520,16 +527,15 @@ mod tests {
         std::fs::remove_dir(base.join("granted")).unwrap();
         std::os::unix::fs::symlink(base.join("private-other"), base.join("granted")).unwrap();
         for materialize in [true, false] {
-            let err = confined_expand_write_with("$DOWNLOADS/granted", &base, &home_path, materialize)
-                .expect_err("换链的写目录必须被拒");
+            let err =
+                confined_expand_write_with("$DOWNLOADS/granted", &base, &home_path, materialize)
+                    .expect_err("换链的写目录必须被拒");
             assert!(err.contains("符号链接"), "{err}");
         }
         // 中间一级被换成链接
         std::fs::create_dir_all(base.join("a")).unwrap();
         std::os::unix::fs::symlink(base.join("private-other"), base.join("a/b")).unwrap();
-        assert!(
-            confined_expand_write_with("$DOWNLOADS/a/b/c", &base, &home_path, true).is_err()
-        );
+        assert!(confined_expand_write_with("$DOWNLOADS/a/b/c", &base, &home_path, true).is_err());
         assert!(!base.join("private-other/c").exists());
     }
 

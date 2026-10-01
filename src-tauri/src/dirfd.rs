@@ -65,7 +65,12 @@ mod unix_impl {
                 OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
             )
-            .map_err(|e| format!("打开目录失败（可能被替换成了符号链接）：{}：{e}", path.display()))?;
+            .map_err(|e| {
+                format!(
+                    "打开目录失败（可能被替换成了符号链接）：{}：{e}",
+                    path.display()
+                )
+            })?;
             let st = rustix::fs::fstat(&fd).map_err(|e| e.to_string())?;
             let got = DirIdentity {
                 dev: st.st_dev as u64,
