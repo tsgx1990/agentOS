@@ -539,14 +539,36 @@ async fn clear_caches(
     app_id: Option<String>,
 ) -> Result<disk::ClearReport, String> {
     let state = app.state::<AppState>();
-    let mut running: std::collections::HashSet<String> =
-        state.app_sessions.lock().await.keys().cloned().collect();
-    running.insert("main".to_string());
-    running.extend(
-        session_mgr::running_headless_sessions()
-            .into_iter()
-            .map(|h| h.app_id),
-    );
+    // 注意：`running` 与 `pending` 都是清理开始前的快照。快照之后才打开的应用会话、才登记的
+    // 待确认草稿存在一个极窄的窗口：它们的文件可能被当成无主文件清掉。后果有限（新开会话
+    // 的文件头在启动时才写，清理按 mtime 比较；草稿还要求整棵树超过 24 小时没动），
+    // 这里不为它加全局锁。
+    //
+    // 运行中应用 → 其最早一个运行中会话的启动时刻。同一应用的交互会话与后台会话共用
+    // sessions/<id>，清理只删早于它们的文件。拿不到启动时刻（含主助手，未记录）→ None，
+    // 该目录一个文件都不删。
+    let activity: std::collections::HashMap<String, idle::AppActivity> =
+        state.activity.snapshot().into_iter().collect();
+    let mut running: disk::RunningSessions = std::collections::HashMap::new();
+    let mut note = |id: String, start: Option<std::time::SystemTime>| {
+        running
+            .entry(id)
+            .and_modify(|cur| {
+                *cur = match (*cur, start) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    _ => None,
+                }
+            })
+            .or_insert(start);
+    };
+    let at = |secs: i64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs.max(0) as u64);
+    for id in state.app_sessions.lock().await.keys() {
+        note(id.clone(), activity.get(id).map(|a| at(a.opened_at)));
+    }
+    note("main".to_string(), None);
+    for h in session_mgr::running_headless_sessions() {
+        note(h.app_id, Some(at(h.started_at)));
+    }
     let pending: Vec<std::path::PathBuf> = state
         .mcp
         .pending_install_dirs()

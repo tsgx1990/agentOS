@@ -5,9 +5,9 @@
 //! **不跟随符号链接**：目录只通过 `dirfd::DirHandle`（`O_DIRECTORY | O_NOFOLLOW` 的相对句柄）
 //! 进入，目录项的元数据用 `AT_SYMLINK_NOFOLLOW` 读，删除链接只删链接本身。
 
-use crate::dirfd::{identity_of_real_dir, DirHandle, EntryKind};
+use crate::dirfd::{identity_of_real_dir, DirHandle, EntryInfo, EntryKind};
 use crate::paths::DataLayout;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub const SESSIONS_WARN_BYTES: u64 = 200 * 1024 * 1024;
@@ -29,6 +29,8 @@ pub struct DiskReport {
     pub notifications_bytes: u64,
     pub maker_staging_bytes: u64,
     pub main_sessions_bytes: u64,
+    /// 有目录层级过深而没统计到（数值偏小）。
+    pub incomplete: bool,
     pub apps: Vec<AppDisk>,
     pub threshold_bytes: u64,
 }
@@ -43,7 +45,16 @@ pub struct ClearReport {
     pub refused: Vec<String>,
 }
 
+/// 目录层级上限（每层占一个文件描述符，也防止被构造的深目录拖垮栈）。
+/// 超过的部分：`dir_size` 标记「未完整统计」，清理时计入 `refused`，不静默略过。
 const MAX_DEPTH: usize = 64;
+
+/// 运行中会话的启动时刻留的余量：会话文件的 mtime 可能略早于我们记下的启动时刻。
+pub const SESSION_START_MARGIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 运行中的应用 → 其最早一个运行中会话的启动时刻。`None` 表示拿不到启动时刻，
+/// 该目录一个文件都不删（保守）。
+pub type RunningSessions = HashMap<String, Option<std::time::SystemTime>>;
 
 /// 不跟随链接地打开 `path` 为目录句柄；根本身是链接 / 非目录 → Err。
 fn open_real_dir(path: &Path) -> Result<DirHandle, String> {
@@ -51,34 +62,48 @@ fn open_real_dir(path: &Path) -> Result<DirHandle, String> {
     DirHandle::open_expecting(path, id)
 }
 
-fn tree_size(h: &DirHandle, depth: usize) -> u64 {
-    let Ok(entries) = h.entries() else { return 0 };
+/// 返回 (字节数, 是否完整统计)。
+fn tree_size(h: &DirHandle, depth: usize) -> (u64, bool) {
+    let Ok(entries) = h.entries() else {
+        return (0, true);
+    };
     let mut total = 0u64;
+    let mut complete = true;
     for e in entries {
         match e.kind {
             EntryKind::File => total = total.saturating_add(e.size),
-            EntryKind::Dir if depth < MAX_DEPTH => {
+            EntryKind::Dir if depth >= MAX_DEPTH => complete = false,
+            EntryKind::Dir => {
                 if let Ok(sub) = h.open_subdir(&e.name) {
-                    total = total.saturating_add(tree_size(&sub, depth + 1));
+                    let (n, c) = tree_size(&sub, depth + 1);
+                    total = total.saturating_add(n);
+                    complete &= c;
                 }
             }
             // 符号链接与其它类型不计入：不跟随，也不把目标的大小算进来。
             _ => {}
         }
     }
-    total
+    (total, complete)
+}
+
+/// 同 `dir_size`，另返回「是否完整统计」（有目录超过层级上限而没算进去 → false）。
+pub fn dir_size_checked(path: &Path) -> (u64, bool) {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_file() => (m.len(), true),
+        Ok(m) if m.file_type().is_dir() => match open_real_dir(path) {
+            Ok(h) => tree_size(&h, 0),
+            Err(_) => (0, true),
+        },
+        _ => (0, true),
+    }
 }
 
 /// 递归求和；不跟随符号链接（目录只经 `O_NOFOLLOW` 句柄进入）；路径不存在 → 0；单项读错误跳过。
+/// 超过层级上限的子目录不计入这里的数值；要知道有没有漏算用 `dir_size_checked`
+/// （`disk_report` 用它，漏算时把 `incomplete` 置位并把该应用的会话提示置为超阈值）。
 pub fn dir_size(path: &Path) -> u64 {
-    match std::fs::symlink_metadata(path) {
-        Ok(m) if m.file_type().is_file() => m.len(),
-        Ok(m) if m.file_type().is_dir() => match open_real_dir(path) {
-            Ok(h) => tree_size(&h, 0),
-            Err(_) => 0,
-        },
-        _ => 0,
-    }
+    dir_size_checked(path).0
 }
 
 pub fn disk_report(layout: &DataLayout, app_ids: &[String]) -> DiskReport {
@@ -90,32 +115,43 @@ pub fn disk_report_with_threshold(
     app_ids: &[String],
     threshold: u64,
 ) -> DiskReport {
-    let mut apps: Vec<AppDisk> = app_ids
-        .iter()
-        .map(|id| {
-            let sessions_bytes = dir_size(&layout.session_dir(id));
-            AppDisk {
-                app_id: id.clone(),
-                sessions_bytes,
-                data_bytes: dir_size(&layout.app_data_dir(id)),
-                agent_home_bytes: dir_size(&layout.agent_home_dir(id)),
-                sessions_over_threshold: sessions_bytes > threshold,
-            }
-        })
-        .collect();
+    let mut incomplete = false;
+    let mut size = |p: PathBuf| -> (u64, bool) {
+        let (n, c) = dir_size_checked(&p);
+        incomplete |= !c;
+        (n, c)
+    };
+    let mut apps: Vec<AppDisk> = Vec::new();
+    for id in app_ids {
+        let (sessions_bytes, sessions_complete) = size(layout.session_dir(id));
+        apps.push(AppDisk {
+            app_id: id.clone(),
+            sessions_bytes,
+            data_bytes: size(layout.app_data_dir(id)).0,
+            agent_home_bytes: size(layout.agent_home_dir(id)).0,
+            // 层级过深导致没算全，按「超阈值」提示：不能让应用靠深目录躲过提示。
+            sessions_over_threshold: sessions_bytes > threshold || !sessions_complete,
+        });
+    }
     apps.sort_by(|a, b| {
         (b.sessions_bytes.saturating_add(b.data_bytes))
             .cmp(&a.sessions_bytes.saturating_add(a.data_bytes))
             .then_with(|| a.app_id.cmp(&b.app_id))
     });
+    let root_bytes = size(layout.root_dir()).0;
+    let audit_bytes = size(layout.audit_dir()).0;
+    let notifications_bytes = size(layout.notifications_dir()).0;
+    let maker_staging_bytes = size(layout.maker_staging_root()).0;
+    let main_sessions_bytes = size(layout.session_dir("main")).0;
     DiskReport {
-        root_bytes: dir_size(&layout.root_dir()),
-        audit_bytes: dir_size(&layout.audit_dir()),
-        notifications_bytes: dir_size(&layout.notifications_dir()),
-        maker_staging_bytes: dir_size(&layout.maker_staging_root()),
-        main_sessions_bytes: dir_size(&layout.session_dir("main")),
+        root_bytes,
+        audit_bytes,
+        notifications_bytes,
+        maker_staging_bytes,
+        main_sessions_bytes,
         apps,
         threshold_bytes: threshold,
+        incomplete,
     }
 }
 
@@ -123,27 +159,30 @@ pub fn disk_report_with_threshold(
 struct Tally {
     freed: u64,
     files: usize,
+    /// 遇到超过层级上限的子目录（没有处理）。
+    too_deep: bool,
 }
 
-/// 删掉句柄目录下的东西。`keep` 是顶层要保留的那个文件名。
+/// 删掉句柄目录下的东西（递归）。`keep(entry)` 为真的**普通文件**保留。
 /// 链接只删链接本身；子目录经 `O_NOFOLLOW` 句柄进入（打不开就整项跳过），清空后顺手删掉。
-fn clear_tree(h: &DirHandle, keep: Option<&str>, tally: &mut Tally, depth: usize) {
+fn clear_tree(h: &DirHandle, keep: &dyn Fn(&EntryInfo) -> bool, tally: &mut Tally, depth: usize) {
     let Ok(entries) = h.entries() else { return };
     for e in entries {
-        if keep == Some(e.name.as_str()) && e.kind == EntryKind::File {
-            continue;
-        }
         match e.kind {
             EntryKind::Dir => {
                 if depth >= MAX_DEPTH {
+                    tally.too_deep = true;
                     continue;
                 }
                 if let Ok(sub) = h.open_subdir(&e.name) {
-                    clear_tree(&sub, None, tally, depth + 1);
+                    clear_tree(&sub, keep, tally, depth + 1);
                     let _ = h.remove_empty_dir(&e.name);
                 }
             }
             EntryKind::File => {
+                if keep(&e) {
+                    continue;
+                }
                 if h.remove_file_if_exists(&e.name).is_ok() {
                     tally.freed = tally.freed.saturating_add(e.size);
                     tally.files += 1;
@@ -157,6 +196,28 @@ fn clear_tree(h: &DirHandle, keep: Option<&str>, tally: &mut Tally, depth: usize
     }
 }
 
+/// 整棵树里最新的 mtime（含目录自身、各级目录项；不跟随链接）。
+/// 超过层级上限 → `too_deep` 置位（调用方按「不确定，不删」处理）。
+fn tree_latest(
+    h: &DirHandle,
+    own: std::time::SystemTime,
+    depth: usize,
+    too_deep: &mut bool,
+) -> std::time::SystemTime {
+    let mut latest = own;
+    for e in h.entries().unwrap_or_default() {
+        latest = latest.max(e.mtime);
+        if e.kind == EntryKind::Dir {
+            if depth >= MAX_DEPTH {
+                *too_deep = true;
+            } else if let Ok(sub) = h.open_subdir(&e.name) {
+                latest = latest.max(tree_latest(&sub, e.mtime, depth + 1, too_deep));
+            }
+        }
+    }
+    latest
+}
+
 fn valid_target(id: &str) -> bool {
     !(id.is_empty() || id == "." || id == ".." || id.contains(['/', '\\', '\0']))
 }
@@ -164,17 +225,22 @@ fn valid_target(id: &str) -> bool {
 /// 清缓存。
 /// target=None：清 `<root>/sessions/` 下每个子目录（含 main）+ maker-staging；
 /// target=Some(id)：只清 sessions/<id>，不动草稿。id 含 '/'、'\\'、".." 或为空 → Err。
-/// running 里的目录保留 mtime 最新的那个顶层文件，其余普通文件删除，空子目录顺手删；
-/// 不在 running 里的整目录内容全删（目录本身留着）。
-/// 草稿：maker-staging/<draft> 不在 pending_drafts 里、且 mtime 早于 now - STAGING_MIN_AGE 才删。
+///
+/// `running`：运行中的应用 → 其**最早**一个运行中会话的启动时刻。同一应用的交互会话与后台会话
+/// 共用 `sessions/<id>`，各自在写自己的会话文件，所以运行中的目录保留所有 mtime 不早于
+/// 「最早启动时刻 - SESSION_START_MARGIN」的文件，只删更早的；启动时刻为 `None`（拿不到）→
+/// 该目录一个文件都不删。不在 running 里的整目录内容全删（目录本身留着）。
+/// 草稿：maker-staging/<draft> 不在 pending_drafts 里、且**整棵树**最大 mtime 早于
+/// now - STAGING_MIN_AGE 才删（`stage_write` 改嵌套文件不更新草稿根目录的 mtime）。
 /// 只遍历 sessions/ 与 maker-staging/ 两处。
 ///
 /// 这两处的子目录对应用可写：全程不跟随符号链接（见模块说明）。某个 sessions/<id> 本身是链接
 /// 或被换成别的东西 → 全量清理时跳过并记入 `refused`，指定目标时直接 Err。
+/// 目录层级超过上限的部分不处理，同样记入 `refused`。
 pub fn clear_caches(
     layout: &DataLayout,
     target: Option<&str>,
-    running: &HashSet<String>,
+    running: &RunningSessions,
     pending_drafts: &[PathBuf],
     now: std::time::SystemTime,
 ) -> Result<ClearReport, String> {
@@ -197,20 +263,22 @@ pub fn clear_caches(
         |id: &str, tally: &mut Tally, report: &mut ClearReport| -> Result<(), String> {
             let dir = sessions_root.join(id);
             let h = open_real_dir(&dir)?;
-            let keep = if running.contains(id) {
-                h.entries()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|e| e.kind == EntryKind::File)
-                    .max_by_key(|e| e.mtime)
-                    .map(|e| e.name)
-            } else {
-                None
-            };
-            if running.contains(id) {
-                report.kept_active.push(id.to_string());
+            match running.get(id) {
+                None => clear_tree(&h, &|_| false, tally, 0),
+                Some(None) => report.kept_active.push(id.to_string()),
+                Some(Some(start)) => {
+                    report.kept_active.push(id.to_string());
+                    let cutoff = start
+                        .checked_sub(SESSION_START_MARGIN)
+                        .unwrap_or(std::time::UNIX_EPOCH);
+                    clear_tree(&h, &|e| e.mtime >= cutoff, tally, 0);
+                }
             }
-            clear_tree(&h, keep.as_deref(), tally, 0);
+            if std::mem::take(&mut tally.too_deep) {
+                report
+                    .refused
+                    .push(format!("sessions/{id}（目录层级过深，部分内容未处理）"));
+            }
             Ok(())
         };
 
@@ -225,7 +293,7 @@ pub fn clear_caches(
             // sessions/ 本身由宿主控制；仍然经句柄枚举。
             match open_real_dir(&sessions_root) {
                 Ok(root_h) => {
-                    let mut ids: Vec<String> = root_h
+                    let mut ids: Vec<std::ffi::OsString> = root_h
                         .entries()
                         .unwrap_or_default()
                         .into_iter()
@@ -233,8 +301,18 @@ pub fn clear_caches(
                         .collect();
                     ids.sort();
                     for id in ids {
-                        if clear_session(&id, &mut tally, &mut report).is_err() {
-                            report.refused.push(format!("sessions/{id}"));
+                        // 非 UTF-8 的目录名不可能是合法应用 id，也不在 running 里：按普通目录清。
+                        let label = id.to_string_lossy().into_owned();
+                        let Some(id_str) = id.to_str() else {
+                            if let Ok(sub) = root_h.open_subdir(&id) {
+                                clear_tree(&sub, &|_| false, &mut tally, 0);
+                            } else {
+                                report.refused.push(format!("sessions/{label}"));
+                            }
+                            continue;
+                        };
+                        if clear_session(id_str, &mut tally, &mut report).is_err() {
+                            report.refused.push(format!("sessions/{label}"));
                         }
                     }
                 }
@@ -249,7 +327,7 @@ pub fn clear_caches(
     Ok(report)
 }
 
-fn is_pending(staging_root: &Path, name: &str, pending: &[PathBuf]) -> bool {
+fn is_pending(staging_root: &Path, name: &std::ffi::OsStr, pending: &[PathBuf]) -> bool {
     let canon_root = std::fs::canonicalize(staging_root).ok();
     pending.iter().any(|p| {
         p.file_name().is_some_and(|n| n == name)
@@ -279,20 +357,33 @@ fn clear_staging(
         .checked_sub(STAGING_MIN_AGE)
         .unwrap_or(std::time::UNIX_EPOCH);
     for e in h.entries().unwrap_or_default() {
-        if is_pending(&root, &e.name, pending) || e.mtime > cutoff {
+        if is_pending(&root, &e.name, pending) {
             continue;
         }
+        let label = format!("maker-staging/{}", e.name.to_string_lossy());
         match e.kind {
             EntryKind::Dir => {
                 let Ok(sub) = h.open_subdir(&e.name) else {
-                    report.refused.push(format!("maker-staging/{}", e.name));
+                    report.refused.push(label);
                     continue;
                 };
-                clear_tree(&sub, None, tally, 0);
+                let mut deep = false;
+                let latest = tree_latest(&sub, e.mtime, 0, &mut deep);
+                if deep {
+                    report
+                        .refused
+                        .push(format!("{label}（目录层级过深，未处理）"));
+                    continue;
+                }
+                if latest > cutoff {
+                    continue;
+                }
+                clear_tree(&sub, &|_| false, tally, 0);
                 if h.remove_empty_dir(&e.name).is_ok() {
                     report.removed_drafts += 1;
                 }
             }
+            _ if e.mtime > cutoff => {}
             EntryKind::File => {
                 if h.remove_file_if_exists(&e.name).is_ok() {
                     tally.freed = tally.freed.saturating_add(e.size);
@@ -329,8 +420,12 @@ mod tests {
         f.set_modified(SystemTime::now() - ago).unwrap();
     }
 
-    fn no_run() -> HashSet<String> {
-        HashSet::new()
+    fn no_run() -> RunningSessions {
+        HashMap::new()
+    }
+
+    fn run_since(id: &str, ago: Duration) -> RunningSessions {
+        HashMap::from([(id.to_string(), Some(SystemTime::now() - ago))])
     }
 
     #[cfg(unix)]
@@ -372,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_caches_keeps_newest_file_of_running_sessions() {
+    fn clear_caches_keeps_files_newer_than_running_start() {
         let (td, l) = layout();
         let a = td.path().join("sessions/a");
         write(&a.join("f1"), 100);
@@ -380,7 +475,7 @@ mod tests {
         set_age(&a.join("f1"), Duration::from_secs(3600));
         write(&td.path().join("sessions/b/g1"), 5);
         write(&td.path().join("sessions/b/g2"), 6);
-        let running: HashSet<String> = ["a".to_string()].into();
+        let running = run_since("a", Duration::from_secs(600));
         let r = clear_caches(&l, None, &running, &[], SystemTime::now()).unwrap();
         assert!(!a.join("f1").exists());
         assert!(a.join("f2").exists());
@@ -490,6 +585,114 @@ mod tests {
         assert!(td.path().join("maker-staging/d/f").exists());
     }
 
+    #[test]
+    fn clear_caches_keeps_both_live_files_of_two_sessions_same_app() {
+        // 同一应用的交互会话与后台会话各有一个活文件，都晚于最早启动时刻 → 都保留。
+        let (td, l) = layout();
+        let a = td.path().join("sessions/a");
+        write(&a.join("interactive"), 10);
+        write(&a.join("background"), 20);
+        write(&a.join("stale"), 30);
+        set_age(&a.join("interactive"), Duration::from_secs(300));
+        set_age(&a.join("background"), Duration::from_secs(5));
+        set_age(&a.join("stale"), Duration::from_secs(7200));
+        let running = run_since("a", Duration::from_secs(600));
+        let r = clear_caches(&l, None, &running, &[], SystemTime::now()).unwrap();
+        assert!(a.join("interactive").exists());
+        assert!(a.join("background").exists());
+        assert!(!a.join("stale").exists());
+        assert_eq!(r.removed_files, 1);
+        assert_eq!(r.freed_bytes, 30);
+    }
+
+    #[test]
+    fn clear_caches_unknown_start_time_deletes_nothing() {
+        let (td, l) = layout();
+        let a = td.path().join("sessions/main");
+        write(&a.join("old"), 10);
+        set_age(&a.join("old"), Duration::from_secs(99999));
+        let running = HashMap::from([("main".to_string(), None)]);
+        let r = clear_caches(&l, None, &running, &[], SystemTime::now()).unwrap();
+        assert!(a.join("old").exists());
+        assert_eq!(r.removed_files, 0);
+        assert_eq!(r.kept_active, vec!["main".to_string()]);
+    }
+
+    #[test]
+    fn clear_caches_keeps_draft_with_recent_nested_file() {
+        // 顶层目录很旧，但子目录里有新文件（stage_write 不更新草稿根目录 mtime）→ 不删。
+        let (td, l) = layout();
+        let d = td.path().join("maker-staging/d");
+        write(&d.join("sub/new.txt"), 5);
+        write(&d.join("old.txt"), 5);
+        set_age(&d.join("old.txt"), Duration::from_secs(99 * 3600));
+        // 目录自身 mtime 调旧
+        let dd = fs::File::open(&d).unwrap();
+        dd.set_modified(SystemTime::now() - Duration::from_secs(99 * 3600))
+            .unwrap();
+        let sd = fs::File::open(d.join("sub")).unwrap();
+        sd.set_modified(SystemTime::now() - Duration::from_secs(99 * 3600))
+            .unwrap();
+        // 25 小时后看：new.txt 才 25 小时前……用 now=实际现在 + 1h，仍不满 24h
+        let r = clear_caches(
+            &l,
+            None,
+            &no_run(),
+            &[],
+            SystemTime::now() + Duration::from_secs(3600),
+        )
+        .unwrap();
+        assert_eq!(r.removed_drafts, 0);
+        assert!(d.join("sub/new.txt").exists());
+    }
+
+    fn deep_dir(base: &Path, levels: usize) -> PathBuf {
+        let mut p = base.to_path_buf();
+        for _ in 0..levels {
+            p.push("d");
+        }
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn deep_trees_are_reported_not_silently_skipped() {
+        let (td, l) = layout();
+        let deep = deep_dir(&td.path().join("sessions/a"), MAX_DEPTH + 6);
+        write(&deep.join("big"), 1000);
+        write(&td.path().join("sessions/a/top"), 10);
+        // 统计：标记未完整，且该应用被提示为超阈值
+        let (n, complete) = dir_size_checked(&td.path().join("sessions/a"));
+        assert_eq!(n, 10);
+        assert!(!complete);
+        let r = disk_report_with_threshold(&l, &["a".into()], 1_000_000);
+        assert!(r.incomplete);
+        assert!(r.apps[0].sessions_over_threshold);
+        // 清理：能处理的处理，超深的计入 refused
+        let rep = clear_caches(&l, None, &no_run(), &[], SystemTime::now()).unwrap();
+        assert!(!td.path().join("sessions/a/top").exists());
+        assert!(rep.refused.iter().any(|x| x.starts_with("sessions/a")));
+        assert!(deep.join("big").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_file_names_are_sized_and_cleared() {
+        use std::os::unix::ffi::OsStrExt;
+        let (td, l) = layout();
+        let dir = td.path().join("sessions/a");
+        fs::create_dir_all(&dir).unwrap();
+        let name = std::ffi::OsStr::from_bytes(b"bad-\xff\xfe.jsonl");
+        // 部分文件系统（如 APFS）拒绝非 UTF-8 文件名：此时无从构造，跳过。
+        if fs::write(dir.join(name), vec![b'x'; 50]).is_err() {
+            return;
+        }
+        assert_eq!(dir_size(&dir), 50);
+        let r = clear_caches(&l, None, &no_run(), &[], SystemTime::now()).unwrap();
+        assert_eq!(r.freed_bytes, 50);
+        assert!(fs::symlink_metadata(dir.join(name)).is_err());
+    }
+
     // ---- R2：应用可写目录里的符号链接 ----
 
     #[cfg(unix)]
@@ -532,7 +735,7 @@ mod tests {
         std::os::unix::fs::symlink(vp.join("secret.txt"), s.join("link_file")).unwrap();
         std::os::unix::fs::symlink(&vp, s.join("link_dir")).unwrap();
         // 运行中的应用（保留最新文件）与不在运行的都要验
-        for running in [no_run(), ["a".to_string()].into()] {
+        for running in [no_run(), run_since("a", Duration::from_secs(0))] {
             clear_caches(&l, None, &running, &[], SystemTime::now()).unwrap();
             assert_eq!(snapshot(&vp), before);
             assert!(

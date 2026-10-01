@@ -1143,6 +1143,8 @@ pub async fn steer_app_session(
 pub struct HeadlessSession {
     pub app_id: String,
     pub pid: Option<u32>,
+    /// 登记时刻（unix 秒）。磁盘清理据此判断哪些会话文件属于这个仍在运行的会话。
+    pub started_at: i64,
 }
 
 static HEADLESS: std::sync::LazyLock<
@@ -1164,6 +1166,7 @@ impl HeadlessGuard {
             HeadlessSession {
                 app_id: app_id.to_string(),
                 pid,
+                started_at: crate::idle::now_secs(),
             },
         );
         Self(id)

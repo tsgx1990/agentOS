@@ -520,10 +520,12 @@ mod tests {
             HeadlessSession {
                 app_id: "a".into(),
                 pid: None,
+                started_at: 0,
             },
             HeadlessSession {
                 app_id: "b".into(),
                 pid: Some(7),
+                started_at: 0,
             },
         ]);
         assert!(ids.contains("a") && ids.contains("b") && ids.len() == 2);

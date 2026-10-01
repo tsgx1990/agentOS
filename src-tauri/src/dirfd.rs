@@ -27,7 +27,8 @@ pub enum EntryKind {
 /// 目录项的元数据（对链接取的是链接自己的，不是目标的）。
 #[derive(Debug, Clone)]
 pub struct EntryInfo {
-    pub name: String,
+    /// 文件名按原始字节保存（不要求是 UTF-8）。
+    pub name: std::ffi::OsString,
     pub kind: EntryKind,
     pub size: u64,
     pub mtime: std::time::SystemTime,
@@ -66,8 +67,10 @@ mod unix_impl {
         std::io::Error::from_raw_os_error(e.raw_os_error())
     }
 
-    fn check_name(name: &str) -> Result<(), String> {
-        if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
+    fn check_name(name: &std::ffi::OsStr) -> Result<(), String> {
+        use std::os::unix::ffi::OsStrExt;
+        let b = name.as_bytes();
+        if b.is_empty() || b == b"." || b == b".." || b.contains(&b'/') || b.contains(&0) {
             return Err(format!("非法的文件名：{name:?}"));
         }
         Ok(())
@@ -106,7 +109,7 @@ mod unix_impl {
         /// 在句柄目录里取子目录句柄：不存在就 `mkdirat` 建，再以 `O_DIRECTORY|O_NOFOLLOW`
         /// 打开。子目录若是符号链接 → 打开失败，绝不跟随。
         pub fn open_subdir_creating(&self, name: &str) -> Result<DirHandle, String> {
-            check_name(name)?;
+            check_name(name.as_ref())?;
             match rustix::fs::mkdirat(&self.fd, name, Mode::from_raw_mode(0o755)) {
                 Ok(()) => {}
                 Err(e) if e == rustix::io::Errno::EXIST => {}
@@ -137,7 +140,7 @@ mod unix_impl {
         pub fn write_file_replacing(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
             use std::sync::atomic::{AtomicU64, Ordering};
             static SEQ: AtomicU64 = AtomicU64::new(0);
-            check_name(name)?;
+            check_name(name.as_ref())?;
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
@@ -173,7 +176,8 @@ mod unix_impl {
 
         /// 在句柄目录里打开**已存在**的子目录（`O_DIRECTORY | O_NOFOLLOW`，不创建）。
         /// 子目录是符号链接或不是目录 → Err，绝不跟随。
-        pub fn open_subdir(&self, name: &str) -> Result<DirHandle, String> {
+        pub fn open_subdir(&self, name: impl AsRef<std::ffi::OsStr>) -> Result<DirHandle, String> {
+            let name: &std::ffi::OsStr = name.as_ref();
             check_name(name)?;
             let fd = rustix::fs::openat(
                 &self.fd,
@@ -181,7 +185,7 @@ mod unix_impl {
                 OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
             )
-            .map_err(|e| format!("子目录 {name} 不是真实目录（可能是符号链接）：{e}"))?;
+            .map_err(|e| format!("子目录 {name:?} 不是真实目录（可能是符号链接）：{e}"))?;
             Ok(DirHandle { fd })
         }
 
@@ -190,23 +194,24 @@ mod unix_impl {
         pub fn entries(&self) -> Result<Vec<EntryInfo>, String> {
             let mut dir = rustix::fs::Dir::read_from(&self.fd).map_err(|e| e.to_string())?;
             dir.rewind();
-            let mut names = Vec::new();
+            use std::os::unix::ffi::OsStrExt;
+            let mut names: Vec<std::ffi::CString> = Vec::new();
             for ent in dir.by_ref() {
                 let Ok(ent) = ent else { continue };
                 let n = ent.file_name().to_bytes();
                 if n == b"." || n == b".." {
                     continue;
                 }
-                if let Ok(name) = std::str::from_utf8(n) {
-                    names.push(name.to_string());
-                }
+                names.push(ent.file_name().to_owned());
             }
             let mut out = Vec::new();
-            for name in names {
-                let Ok(st) = rustix::fs::statat(&self.fd, name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+            for cname in names {
+                let Ok(st) =
+                    rustix::fs::statat(&self.fd, cname.as_c_str(), AtFlags::SYMLINK_NOFOLLOW)
                 else {
                     continue;
                 };
+                let name = std::ffi::OsStr::from_bytes(cname.to_bytes()).to_os_string();
                 let kind = match rustix::fs::FileType::from_raw_mode(st.st_mode) {
                     rustix::fs::FileType::RegularFile => EntryKind::File,
                     rustix::fs::FileType::Directory => EntryKind::Dir,
@@ -234,14 +239,19 @@ mod unix_impl {
         }
 
         /// 删除句柄目录里的一个空子目录（`unlinkat(AT_REMOVEDIR)`）；非空 / 不是目录 → Err。
-        pub fn remove_empty_dir(&self, name: &str) -> Result<(), String> {
+        pub fn remove_empty_dir(&self, name: impl AsRef<std::ffi::OsStr>) -> Result<(), String> {
+            let name: &std::ffi::OsStr = name.as_ref();
             check_name(name)?;
             rustix::fs::unlinkat(&self.fd, name, AtFlags::REMOVEDIR)
                 .map_err(|e| io_err(e).to_string())
         }
 
         /// 删除句柄目录里的 `name`（对符号链接只删链接本身）；不存在视为成功。
-        pub fn remove_file_if_exists(&self, name: &str) -> Result<(), String> {
+        pub fn remove_file_if_exists(
+            &self,
+            name: impl AsRef<std::ffi::OsStr>,
+        ) -> Result<(), String> {
+            let name: &std::ffi::OsStr = name.as_ref();
             check_name(name)?;
             match rustix::fs::unlinkat(&self.fd, name, AtFlags::empty()) {
                 Ok(()) => Ok(()),
@@ -291,7 +301,7 @@ impl DirHandle {
         std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, self.path.join(name)).map_err(|e| e.to_string())
     }
-    pub fn open_subdir(&self, name: &str) -> Result<DirHandle, String> {
+    pub fn open_subdir(&self, name: impl AsRef<std::ffi::OsStr>) -> Result<DirHandle, String> {
         let p = self.path.join(name);
         identity_of_real_dir(&p)?;
         Ok(DirHandle { path: p })
@@ -316,7 +326,7 @@ impl DirHandle {
                 EntryKind::Other
             };
             out.push(EntryInfo {
-                name: ent.file_name().to_string_lossy().into_owned(),
+                name: ent.file_name(),
                 kind,
                 size: m.len(),
                 mtime: m.modified().unwrap_or(std::time::UNIX_EPOCH),
@@ -324,10 +334,10 @@ impl DirHandle {
         }
         Ok(out)
     }
-    pub fn remove_empty_dir(&self, name: &str) -> Result<(), String> {
+    pub fn remove_empty_dir(&self, name: impl AsRef<std::ffi::OsStr>) -> Result<(), String> {
         std::fs::remove_dir(self.path.join(name)).map_err(|e| e.to_string())
     }
-    pub fn remove_file_if_exists(&self, name: &str) -> Result<(), String> {
+    pub fn remove_file_if_exists(&self, name: impl AsRef<std::ffi::OsStr>) -> Result<(), String> {
         match std::fs::remove_file(self.path.join(name)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
