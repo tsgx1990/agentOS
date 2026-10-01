@@ -148,7 +148,11 @@ export function ResourcePanel({ apps, onCloseApp, onClose }: Props) {
   }
 
   async function closeApp(id: string) {
-    await onCloseApp?.(id);
+    try {
+      await onCloseApp?.(id);
+    } catch (e) {
+      if (alive.current) setErr(String(e));
+    }
     void pull();
   }
 
@@ -242,7 +246,7 @@ export function ResourcePanel({ apps, onCloseApp, onClose }: Props) {
         <>
           <div className="rp-section">
             <h3 className="rp-section-title">
-              应用<span>{report.apps.length}</span>
+              应用<span className="rp-section-count">{report.apps.length}</span>
             </h3>
             {report.apps.length === 0 ? (
               <p className="rp-empty">当前没有打开的应用</p>
@@ -308,21 +312,21 @@ export function ResourcePanel({ apps, onCloseApp, onClose }: Props) {
 
           <div className="rp-section">
             <h3 className="rp-section-title">宿主与服务</h3>
-              <ul className="rp-minis">
-                {systemGroups.map(({ key, name, hint, g }) => (
-                  <li key={key} className="rp-mini">
-                    <span className="rp-name">{name}</span>
-                    <span className="rp-sub">{hint}</span>
-                    <b className="rp-big">{formatBytes(g.rss_bytes)}</b>
-                    <div className="rp-bar rp-bar-thin">
-                      <i style={{ width: `${Math.max(2, pct(g.rss_bytes))}%` }} />
-                    </div>
-                    <span className="rp-sub">
-                      {g.proc_count} 个进程 · CPU {cpuText(report.cpu_ready, g.cpu_percent)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+            <ul className="rp-minis">
+              {systemGroups.map(({ key, name, hint, g }) => (
+                <li key={key} className="rp-mini">
+                  <span className="rp-name">{name}</span>
+                  <span className="rp-sub">{hint}</span>
+                  <b className="rp-big">{formatBytes(g.rss_bytes)}</b>
+                  <div className="rp-bar rp-bar-thin">
+                    <i style={{ width: `${Math.max(2, pct(g.rss_bytes))}%` }} />
+                  </div>
+                  <span className="rp-sub">
+                    {g.proc_count} 个进程 · CPU {cpuText(report.cpu_ready, g.cpu_percent)}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
         </>
       )}
@@ -404,25 +408,25 @@ export function ResourcePanel({ apps, onCloseApp, onClose }: Props) {
               </li>
             </ul>
             {disk.incomplete && (
-              <p className="rp-hint rp-hint-warn rp-gap" role="status">
+              <p className="rp-hint rp-hint-notice rp-gap" role="status">
                 部分目录层级过深，统计不完整，实际占用可能比这里显示的更大。
               </p>
             )}
             {disk.apps.length > 0 && (
               <div className="rp-tablewrap rp-gap">
-                <table className="rp-table">
+                <table className="rp-disk-table">
                   <thead>
                     <tr>
-                      <th className="rp-col-name">应用</th>
+                      <th className="rp-disk-name">应用</th>
                       <th className="num">会话文件</th>
                       <th className="num">应用数据</th>
-                      <th className="num rp-col-time">工作目录</th>
+                      <th className="num">工作目录</th>
                     </tr>
                   </thead>
                   <tbody>
                     {disk.apps.map((d) => (
                       <tr key={d.app_id}>
-                        <td className="rp-col-name">
+                        <td className="rp-disk-name">
                           <span className="rp-name">{nameOf(d.app_id)}</span>
                           {d.sessions_over_threshold && (
                             <span className="rp-chip rp-chip-warn">
@@ -437,7 +441,7 @@ export function ResourcePanel({ apps, onCloseApp, onClose }: Props) {
                         </td>
                         <td className="num">{formatBytes(d.sessions_bytes)}</td>
                         <td className="num">{formatBytes(d.data_bytes)}</td>
-                        <td className="num rp-col-time">{formatBytes(d.agent_home_bytes)}</td>
+                        <td className="num">{formatBytes(d.agent_home_bytes)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -467,7 +471,7 @@ export function ResourcePanel({ apps, onCloseApp, onClose }: Props) {
               {cleared && (
                 <span className="rp-done" role="status">
                   已释放 {formatBytes(cleared.freed_bytes)}
-                  {cleared.refused.length > 0 && `，另有 ${cleared.refused.length} 项因目录是链接或被换链而未处理`}
+                  {cleared.refused.length > 0 && `，另有 ${cleared.refused.length} 项未处理（目录是链接、被替换或层级过深）`}
                 </span>
               )}
             </div>

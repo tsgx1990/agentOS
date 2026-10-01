@@ -87,7 +87,7 @@
   color: var(--text-secondary);
   letter-spacing: 0.04em;
 }
-.rp-section-title span {
+.rp-section-count {
   font-weight: 500;
   font-size: 11px;
   color: var(--text-muted);
@@ -202,7 +202,7 @@
   accent-color: var(--color-accent);
 }
 
-/* A：表格式 */
+/* 磁盘明细表 */
 .rp-tablewrap {
   background: var(--color-card-bg);
   border: 1px solid var(--color-card-border);
@@ -212,16 +212,12 @@
 .rp-gap {
   margin-top: 10px;
 }
-.rp-table td.rp-col-name .rp-chip {
-  display: inline-block;
-  margin: 2px 0 0 8px;
-}
-.rp-table {
+.rp-disk-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
 }
-.rp-table th {
+.rp-disk-table th {
   padding: 9px 12px;
   text-align: left;
   font-size: 11px;
@@ -232,39 +228,28 @@
   border-bottom: 1px solid var(--color-card-border);
   white-space: nowrap;
 }
-.rp-table td {
+.rp-disk-table td {
   padding: 10px 12px;
   vertical-align: middle;
   border-bottom: 1px solid var(--color-panel-divider);
 }
-.rp-table tbody tr:last-child td {
+.rp-disk-table tbody tr:last-child td {
   border-bottom: 0;
 }
-.rp-table tbody tr:hover {
-  background: var(--color-ground);
-}
-.rp-table .num {
+.rp-disk-table .num {
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.rp-table td.num {
+.rp-disk-table td.num {
   color: var(--text-secondary);
 }
-.rp-table .rp-col-name {
-  display: table-cell;
-  width: 100%;
+.rp-disk-table .rp-disk-name {
   min-width: 120px;
 }
-.rp-table td.rp-col-name {
-  display: table-cell;
-}
-.rp-table td.rp-col-name > * + * {
-  margin-left: 8px;
-}
-.rp-table td.rp-col-name .rp-sub {
-  display: block;
-  margin: 2px 0 0;
+.rp-disk-table .rp-disk-name .rp-chip {
+  display: inline-block;
+  margin: 2px 0 0 8px;
 }
 
 /* B：卡片式 */
@@ -431,6 +416,9 @@
 .rp-hint-warn {
   color: var(--color-danger);
 }
+.rp-hint-notice {
+  color: var(--chip-warn-fg);
+}
 .rp-disk {
   list-style: none;
   margin: 0;
@@ -490,17 +478,8 @@
   .rp {
     padding: 20px 16px 36px;
   }
-  .rp-col-time,
-  .rp-col-proc {
-    display: none;
-  }
-  .rp-table .rp-actions {
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 6px;
-  }
-  .rp-table th,
-  .rp-table td {
+  .rp-disk-table th,
+  .rp-disk-table td {
     padding-left: 8px;
     padding-right: 8px;
   }

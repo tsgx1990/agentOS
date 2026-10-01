@@ -106,7 +106,7 @@ export function Shell() {
   const [providersErr, setProvidersErr] = useState<string | null>(null);
 
   const refreshDormant = () =>
-    listDormantApps().then((d) => setDormant(Array.isArray(d) ? d : [])).catch(() => setDormant([]));
+    listDormantApps().then(setDormant).catch(() => setDormant([]));
   const refresh = () => {
     refreshDormant();
     return listApps().then(setApps).catch(() => setApps([]));

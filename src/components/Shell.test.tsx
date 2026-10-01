@@ -11,6 +11,7 @@ const invokeMock = vi.fn().mockImplementation((cmd: string) => {
   if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
   if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
   if (cmd === "list_staged_calls" || cmd === "list_approval_rules") return Promise.resolve([]);
+  if (cmd === "list_dormant_apps") return Promise.resolve([]);
   return Promise.resolve(0);
 });
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -34,6 +35,7 @@ test("点击「技能」入口切到 SkillsView", async () => {
     if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
     if (cmd === "list_staged_calls" || cmd === "list_approval_rules") return Promise.resolve([]);
     if (cmd === "list_skills" || cmd === "skill_grants" || cmd === "market_fetch_index") return Promise.resolve([]);
+    if (cmd === "list_dormant_apps") return Promise.resolve([]);
     return Promise.resolve(0);
   });
   render(<Shell />);
@@ -46,6 +48,7 @@ test("首次启动（无任何已配置 provider）渲染引导向导而非主�
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
     if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: false, base_url: null, api: null, presets: [] }]);
+    if (cmd === "list_dormant_apps") return Promise.resolve([]);
     return Promise.resolve(0);
   });
   render(<Shell />);
@@ -57,6 +60,7 @@ test("list_providers 报错（配置文件损坏）→ 不进向导，进主工�
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
     if (cmd === "list_providers") return Promise.reject("/x/providers.json 解析失败：bad（请修复或删除该文件）");
+    if (cmd === "list_dormant_apps") return Promise.resolve([]);
     return Promise.resolve(0);
   });
   render(<Shell />);
@@ -72,6 +76,7 @@ test("任一 provider 已配置（不一定是 Anthropic）→ 不显示向导",
       { id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: false, base_url: null, api: null, presets: [] },
       { id: "deepseek", display: "DeepSeek 深度求索", native: true, region: "cn", configured: true, base_url: null, api: null, presets: [] },
     ]);
+    if (cmd === "list_dormant_apps") return Promise.resolve([]);
     return Promise.resolve(0);
   });
   render(<Shell />);
@@ -87,6 +92,7 @@ test("点击「模型与密钥」入口切到模型设置页", async () => {
     ]);
     if (cmd === "get_model_settings") return Promise.resolve({ global: null, apps: [] });
     if (cmd === "custom_provider_presets" || cmd === "usage_by_model") return Promise.resolve([]);
+    if (cmd === "list_dormant_apps") return Promise.resolve([]);
     return Promise.resolve(0);
   });
   render(<Shell />);
@@ -104,6 +110,7 @@ test("providersErr 在「模型与密钥」页里修好（list_providers 恢复�
       : Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
     if (cmd === "get_model_settings") return Promise.resolve({ default_model: null, apps: [], global: null });
     if (cmd === "custom_provider_presets" || cmd === "usage_by_model") return Promise.resolve([]);
+    if (cmd === "list_dormant_apps") return Promise.resolve([]);
     return Promise.resolve(0);
   });
   render(<Shell />);
@@ -118,21 +125,22 @@ test("providersErr 在「模型与密钥」页里修好（list_providers 恢复�
 });
 
 test("收到 app-dormant 且是当前打开的应用 → 回到应用网格，并显示休眠角标", async () => {
+  let dormantNow: string[] = [];
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
     if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
     if (cmd === "open_app") return Promise.resolve(1);
-    if (cmd === "list_dormant_apps") return Promise.resolve(["a"]);
+    if (cmd === "list_dormant_apps") return Promise.resolve(dormantNow);
     return Promise.resolve(0);
   });
   render(<Shell />);
   await waitFor(() => expect(screen.getByText("待办")).toBeTruthy());
   fireEvent.click(screen.getByText("待办"));
-  await waitFor(() => expect(screen.queryByText("休眠")).toBeNull());
   await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_app", { appId: "a" }));
   // 打开后网格消失
   await waitFor(() => expect(screen.queryByText("空闲")).toBeNull());
   await waitFor(() => expect(listeners["app-dormant"]).toBeTruthy());
+  dormantNow = ["a"];
   listeners["app-dormant"]({ payload: { app_id: "a", idle_secs: 900, freed_rss_bytes: 1000 } });
   await waitFor(() => expect(screen.getByText("休眠")).toBeTruthy());
 });

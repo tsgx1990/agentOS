@@ -162,3 +162,11 @@ test("没有打开的应用时显示空状态", async () => {
   render(<ResourcePanel apps={names} />);
   await waitFor(() => expect(screen.getByText("当前没有打开的应用")).toBeTruthy());
 });
+
+test("关闭应用失败时显示错误", async () => {
+  const onCloseApp = vi.fn().mockRejectedValue("关闭失败：boom");
+  render(<ResourcePanel apps={names} onCloseApp={onCloseApp} />);
+  await waitFor(() => expect(screen.getAllByText("阿尔法").length).toBeGreaterThan(0));
+  fireEvent.click(screen.getAllByText("关闭")[0]);
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("关闭失败：boom"));
+});
