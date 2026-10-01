@@ -189,9 +189,12 @@ export function ResourcePanel({ apps, onCloseApp, onClose }: Props) {
         />
         <span>不休眠</span>
       </label>
-      <button type="button" className="rp-btn" onClick={() => void closeApp(a.app_id)}>
-        关闭
-      </button>
+      {/* 只有后台会话（没有打开的界面会话）时关闭是 no-op，不显示。 */}
+      {a.opened_at != null && (
+        <button type="button" className="rp-btn" onClick={() => void closeApp(a.app_id)}>
+          关闭
+        </button>
+      )}
     </div>
   );
 

@@ -157,6 +157,14 @@ test("「关闭」调用 onCloseApp(appId)", async () => {
   await waitFor(() => expect(onCloseApp).toHaveBeenCalledWith("alpha"));
 });
 
+test("只有后台会话的应用行（opened_at 为空）不显示「关闭」，仍可设「不休眠」", async () => {
+  report.apps = [app("beta", { opened_at: null, background_sessions: 1, idle_secs: null })];
+  render(<ResourcePanel apps={names} onCloseApp={vi.fn()} />);
+  await waitFor(() => expect(screen.getAllByText("贝塔").length).toBeGreaterThan(0));
+  expect(screen.queryAllByText("关闭")).toHaveLength(0);
+  expect(screen.getAllByLabelText("贝塔 不休眠").length).toBeGreaterThan(0);
+});
+
 test("没有打开的应用时显示空状态", async () => {
   report.apps = [];
   render(<ResourcePanel apps={names} />);
