@@ -155,99 +155,117 @@ fn expand_and_check_base(
     Ok(Some((expanded, canon_base)))
 }
 
-/// READ 展开 + 用 `confine_under` 做包含性复核——防"合法授权目录里种一个指向别处的
-/// 符号链接，下次启动时把放行面偷偷放大到符号链接目标"（例如 `filesystem.read:
-/// ["$DOWNLOADS", "$DOWNLOADS/export"]` 合法过 `validate_spec`，但运行时把
-/// `~/Downloads/export` 换成指向 `/` 的符号链接）。候选路径尚不存在（canonicalize
-/// 失败）视为"还没发生"，跳过而非报错——与 spec §9 对未落地路径的既有容忍度一致，
-/// 不是本函数要收紧的地方（WRITE 侧不同，见 `confined_expand_write_with`）。逃出
-/// `base` 则 **fail-closed**：整次启动直接失败，不静默丢弃——在自己被授权的目录里
-/// 种符号链接越权是恶意行为，不是"配置写错了"可以纠正后继续跑的那类错误。
+/// 授权目录的「真实性」检查（I-c）：用户授权的目录由应用在沙盒里读写，应用可以把授权的
+/// 子目录改名后换成链接，指向**同一标准目录里的其它位置**——规范化后仍在 `base` 之内，
+/// 单靠 `confine_under` 拦不住，但已超出用户同意的范围。所以对每个贡献给沙盒的路径要求：
+/// 存在时不是符号链接，且规范化后**等于**按字面从已规范化的 `base` 推出的预期路径
+/// （这同时挡住中间某一级被换成链接）。返回 `Ok(None)` 表示路径尚不存在，`Ok(Some(is_dir))`
+/// 表示存在且合格，`Err` 表示被换链（可读错误，调用方 fail-closed、不贡献该路径）。
+fn check_real_literal(spec: &str, var: &str, literal: &Path) -> Result<Option<bool>, String> {
+    let not_real = |why: &str| {
+        format!(
+            "路径声明 {spec} 的目录（{}）{why}，已不是授权时的真实位置（可能被替换成了符号链接），拒绝启动",
+            literal.display()
+        )
+    };
+    let meta = match std::fs::symlink_metadata(literal) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("检查 {var} 下的路径 {} 失败：{e}", literal.display())),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(not_real("是符号链接"));
+    }
+    match std::fs::canonicalize(literal) {
+        Ok(c) if c == literal => Ok(Some(meta.is_dir())),
+        Ok(_) => Err(not_real("规范化后与预期路径不一致（路径中某一级是符号链接）")),
+        Err(e) => Err(format!("规范化 {} 失败：{e}", literal.display())),
+    }
+}
+
+/// 把 spec 的子路径按字面接到已规范化的 `canon_base` 上（只取 Normal 分量）。
+fn literal_components(spec: &str) -> Vec<String> {
+    split(spec)
+        .1
+        .map(|r| {
+            Path::new(r)
+                .components()
+                .filter_map(|c| match c {
+                    std::path::Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// READ 展开：授权路径存在时必须是真目录/真文件、不是链接、规范化等于由已规范化 `base`
+/// 按字面推出的预期路径（`check_real_literal`），否则 **fail-closed**：整次启动直接失败并给出
+/// 可读错误，不贡献该路径——在自己被授权的目录里换链越权是恶意行为，不是「配置写错了」。
+/// 候选路径尚不存在视为「还没发生」，跳过而非报错——与 spec §9 对未落地路径的既有容忍度
+/// 一致（WRITE 侧不同，见 `confined_expand_write_with`）。
 ///
 /// `base`/`home` 作为参数注入（而非内部直接调 `base_dir`/`dirs::home_dir`）：便于用
-/// 假 tempdir 单测"base 落在 home 之下 → Ok / base 落在 home 之外 → Err"这条 P6-A
-/// 新加的复核，不需要真的污染/依赖本机的标准目录布局。生产入口见 `confined_expand`。
+/// 假 tempdir 单测，不需要真的污染/依赖本机的标准目录布局。生产入口见 `confined_expand`。
 pub(crate) fn confined_expand_with(
     spec: &str,
     base: &Path,
     home: &Path,
 ) -> Result<Option<PathBuf>, String> {
-    let Some((expanded, canon_base)) = expand_and_check_base(spec, base, home)? else {
+    let Some((_expanded, canon_base)) = expand_and_check_base(spec, base, home)? else {
         return Ok(None);
     };
     let (var, _) = split(spec);
-    let candidate = match std::fs::canonicalize(&expanded) {
-        Ok(c) => c,
-        Err(_) => return Ok(None),
-    };
-    confine_under(&canon_base, &candidate)
-        .map(Some)
-        .map_err(|_| {
-            format!(
-                "路径声明 {spec} 解析后（{}）逃出了 {var} 目录（{}），拒绝启动",
-                candidate.display(),
-                canon_base.display()
-            )
-        })
+    let mut literal = canon_base;
+    for c in literal_components(spec) {
+        literal.push(c);
+    }
+    Ok(check_real_literal(spec, var, &literal)?.map(|_| literal))
 }
 
 /// WRITE 展开：候选目录允许尚不存在（清单声明的写目录，安装/首次启动时通常还没创建
-/// 过）——与 READ 侧"不存在就跳过"不同，这里改为：先沿候选路径向上找到最近一个**已
-/// 存在**的祖先目录，确认它仍在 `base` 之内（防"尚不存在"这个借口绕过符号链接放大
-/// 检查——假设更深层的某个祖先本身就是逃出 `base` 的符号链接，`Path::ancestors()`
-/// 从候选路径本身开始逐级向上，必然先撞见它），确认通过后才 `create_dir_all` 建出
-/// 完整候选目录，再重新 canonicalize + `confine_under` 收尾复核一遍（建出来的目录
-/// 本身不可能是符号链接，但双重确认成本很低，且与 READ 分支保持同一套收尾校验，不
-/// 搞两条不对称的代码路径）。最近的已存在祖先本身逃出 `base` → `Err`（fail-closed，
-/// 不创建任何目录）。
-/// `materialize`（F1，review）：`false` 时——即便候选目录尚不存在——绝不
-/// `create_dir_all`：仍然沿候选路径向上找最近已存在的祖先并对它做包含性复核
-/// （符号链接放大检查照常生效，`Err` 照常 fail-closed），但校验完只返回
-/// `Ok(None)`（与 READ 侧对未落地路径的既有容忍度一致），不落地任何目录。
-/// 供 `describe()`（`preview_install`/`app_capabilities` 只读诊断）传 `false`
-/// 复用同一套校验逻辑而不产生磁盘副作用；生产真实启动路径（`open_app_after_acquire`/
-/// `headless_contribution`）传 `true`，行为与迁移前完全一致。
+/// 过）。从已规范化的 `base` 起逐级按字面向下走：已存在的每一级都必须是真目录、不是链接、
+/// 规范化等于该级预期字面路径（`check_real_literal`），任何一级被换链 → `Err`（fail-closed，
+/// 不创建任何东西）；遇到第一个不存在的一级：`materialize` 为 `true` 则只用单层 `create_dir`
+/// 逐级建出剩余部分，为 `false` 则只返回 `Ok(None)`、不落地任何目录。
+/// `materialize`（F1，review）：供 `describe()`（`preview_install`/`app_capabilities` 只读
+/// 诊断）传 `false` 复用同一套校验而不产生磁盘副作用；生产真实启动路径
+/// （`open_app_after_acquire`/`headless_contribution`）传 `true`。
 pub(crate) fn confined_expand_write_with(
     spec: &str,
     base: &Path,
     home: &Path,
     materialize: bool,
 ) -> Result<Option<PathBuf>, String> {
-    let Some((expanded, canon_base)) = expand_and_check_base(spec, base, home)? else {
+    let Some((_expanded, canon_base)) = expand_and_check_base(spec, base, home)? else {
         return Ok(None);
     };
     let (var, _) = split(spec);
-    if std::fs::canonicalize(&expanded).is_err() {
-        let nearest = expanded
-            .ancestors()
-            .find_map(|p| std::fs::canonicalize(p).ok())
-            .ok_or_else(|| format!("路径声明 {spec} 找不到任何已存在的祖先目录，拒绝启动"))?;
-        confine_under(&canon_base, &nearest).map_err(|_| {
-            format!(
-                "路径声明 {spec} 最近的已存在祖先目录（{}）逃出了 {var} 目录（{}），拒绝启动",
-                nearest.display(),
-                canon_base.display()
-            )
-        })?;
-        if !materialize {
-            // 只校验、不落地——describe()/preview_install/app_capabilities 之类的
-            // 只读路径必须零磁盘副作用，与 READ 侧"未落地路径视为还没发生"的容忍度对齐。
-            return Ok(None);
+    let mut cur = canon_base;
+    for c in literal_components(spec) {
+        cur.push(c);
+        match check_real_literal(spec, var, &cur)? {
+            Some(true) => {}
+            Some(false) => {
+                return Err(format!(
+                    "路径声明 {spec} 的写目录（{}）已存在但不是目录，拒绝启动",
+                    cur.display()
+                ))
+            }
+            None => {
+                if !materialize {
+                    // 只校验、不落地：已存在的祖先都合格，剩余部分尚未创建。
+                    return Ok(None);
+                }
+                std::fs::create_dir(&cur)
+                    .map_err(|e| format!("创建写目录 {} 失败：{e}", cur.display()))?;
+                if check_real_literal(spec, var, &cur)? != Some(true) {
+                    return Err(format!("创建后的写目录 {} 不合格，拒绝启动", cur.display()));
+                }
+            }
         }
-        std::fs::create_dir_all(&expanded)
-            .map_err(|e| format!("创建写目录 {} 失败：{e}", expanded.display()))?;
     }
-    let candidate = std::fs::canonicalize(&expanded)
-        .map_err(|e| format!("展开写目录 {} 失败：{e}", expanded.display()))?;
-    confine_under(&canon_base, &candidate)
-        .map(Some)
-        .map_err(|_| {
-            format!(
-                "路径声明 {spec} 解析后（{}）逃出了 {var} 目录（{}），拒绝启动",
-                candidate.display(),
-                canon_base.display()
-            )
-        })
+    Ok(Some(cur))
 }
 
 fn resolved_home() -> Result<PathBuf, String> {
@@ -527,10 +545,66 @@ mod tests {
 
         let err = confined_expand_write_with("$DOWNLOADS/escape/new/sub", &base, &home_path, true)
             .expect_err("最近的已存在祖先逃出 base 应被拒");
-        assert!(err.contains("逃出了"), "{err}");
+        assert!(err.contains("符号链接"), "{err}");
         assert!(
             !outside.join("new").exists(),
             "拒绝时绝不应在逃逸目标下创建任何目录"
         );
+    }
+
+    // ---- I-c：授权目录被换成指向「同一标准目录内其它位置」的链接——不放行 ----
+
+    fn std_dir_with_swapped_link() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        let home_path = std::fs::canonicalize(home.path()).unwrap();
+        let base = home_path.join("Downloads");
+        std::fs::create_dir_all(base.join("granted")).unwrap();
+        std::fs::create_dir_all(base.join("private-other")).unwrap();
+        (home, home_path, base)
+    }
+
+    #[test]
+    fn write_dir_swapped_to_in_base_symlink_is_rejected_ic() {
+        let (_h, home_path, base) = std_dir_with_swapped_link();
+        // 正常：真目录照常贡献。
+        let ok = confined_expand_write_with("$DOWNLOADS/granted", &base, &home_path, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ok, base.join("granted"));
+        // 应用把 granted 换成指向同一标准目录里另一处的链接：规范化后仍在 base 内，旧逻辑放行。
+        std::fs::remove_dir(base.join("granted")).unwrap();
+        std::os::unix::fs::symlink(base.join("private-other"), base.join("granted")).unwrap();
+        for materialize in [true, false] {
+            let err = confined_expand_write_with("$DOWNLOADS/granted", &base, &home_path, materialize)
+                .expect_err("换链的写目录必须被拒");
+            assert!(err.contains("符号链接"), "{err}");
+        }
+        // 中间一级被换成链接
+        std::fs::create_dir_all(base.join("a")).unwrap();
+        std::os::unix::fs::symlink(base.join("private-other"), base.join("a/b")).unwrap();
+        assert!(
+            confined_expand_write_with("$DOWNLOADS/a/b/c", &base, &home_path, true).is_err()
+        );
+        assert!(!base.join("private-other/c").exists());
+    }
+
+    #[test]
+    fn read_dir_swapped_to_in_base_symlink_is_rejected_ic() {
+        let (_h, home_path, base) = std_dir_with_swapped_link();
+        let ok = confined_expand_with("$DOWNLOADS/granted", &base, &home_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ok, base.join("granted"));
+        // 单个文件也可以授权读取（真文件，非链接）
+        std::fs::write(base.join("report.txt"), "x").unwrap();
+        assert_eq!(
+            confined_expand_with("$DOWNLOADS/report.txt", &base, &home_path).unwrap(),
+            Some(base.join("report.txt"))
+        );
+        std::fs::remove_dir(base.join("granted")).unwrap();
+        std::os::unix::fs::symlink(base.join("private-other"), base.join("granted")).unwrap();
+        let err = confined_expand_with("$DOWNLOADS/granted", &base, &home_path)
+            .expect_err("换链的读目录必须被拒");
+        assert!(err.contains("符号链接"), "{err}");
     }
 }
