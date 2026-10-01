@@ -1,6 +1,12 @@
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { test, expect, vi } from "vitest";
-vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
+const listeners = vi.hoisted(() => ({} as Record<string, (e: { payload: unknown }) => void>));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (name: string, cb: (e: { payload: unknown }) => void) => {
+    listeners[name] = cb;
+    return Promise.resolve(() => {});
+  },
+}));
 const invokeMock = vi.fn().mockImplementation((cmd: string) => {
   if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
   if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
@@ -109,4 +115,46 @@ test("providersErr 在「模型与密钥」页里修好（list_providers 恢复�
   fireEvent.click(await screen.findByRole("button", { name: /返回|关闭/ }));
   await waitFor(() => expect(screen.getByText("待办")).toBeTruthy());
   expect(screen.queryByText(/读取模型服务配置失败/)).toBeNull();
+});
+
+test("收到 app-dormant 且是当前打开的应用 → 回到应用网格，并显示休眠角标", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
+    if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
+    if (cmd === "open_app") return Promise.resolve(1);
+    if (cmd === "list_dormant_apps") return Promise.resolve(["a"]);
+    return Promise.resolve(0);
+  });
+  render(<Shell />);
+  await waitFor(() => expect(screen.getByText("待办")).toBeTruthy());
+  fireEvent.click(screen.getByText("待办"));
+  await waitFor(() => expect(screen.queryByText("休眠")).toBeNull());
+  await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_app", { appId: "a" }));
+  // 打开后网格消失
+  await waitFor(() => expect(screen.queryByText("空闲")).toBeNull());
+  await waitFor(() => expect(listeners["app-dormant"]).toBeTruthy());
+  listeners["app-dormant"]({ payload: { app_id: "a", idle_secs: 900, freed_rss_bytes: 1000 } });
+  await waitFor(() => expect(screen.getByText("休眠")).toBeTruthy());
+});
+
+test("点击「资源」入口切到资源面板", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "list_apps") return Promise.resolve([]);
+    if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
+    if (cmd === "resource_report") return Promise.resolve({
+      sampled_at: Math.floor(Date.now() / 1000), cpu_ready: true,
+      host: { label: "host", root_pids: [1], proc_count: 1, rss_bytes: 1024, cpu_percent: 0 },
+      main: null, apps: [], mcp_servers: [],
+      other: { label: "other", root_pids: [], proc_count: 0, rss_bytes: 0, cpu_percent: 0 },
+      total_rss_bytes: 1024, total_cpu_percent: 0, total_proc_count: 1,
+    });
+    if (cmd === "get_idle_policy") return Promise.resolve({ enabled: true, timeout_secs: 900, exempt_apps: [] });
+    if (cmd === "disk_report") return Promise.resolve({ root_bytes: 0, audit_bytes: 0, notifications_bytes: 0, maker_staging_bytes: 0, main_sessions_bytes: 0, incomplete: false, apps: [], threshold_bytes: 1 });
+    if (cmd === "app_usage") return Promise.resolve({ input: 0, output: 0, cost: 0 });
+    return Promise.resolve([]);
+  });
+  render(<Shell />);
+  await waitFor(() => expect(screen.getByText("资源")).toBeTruthy());
+  fireEvent.click(screen.getByText("资源"));
+  await waitFor(() => expect(screen.getByText("当前没有打开的应用")).toBeTruthy());
 });

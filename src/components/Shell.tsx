@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./Shell.css";
 import { NavRail } from "./NavRail";
@@ -11,6 +11,10 @@ import { UninstallDialog } from "./UninstallDialog";
 import { AuditView } from "./AuditView";
 import { ConnectorSettings } from "./ConnectorSettings";
 import { ModelSettings } from "./ModelSettings";
+import { ResourcePanel } from "./ResourcePanel";
+import { listen } from "@tauri-apps/api/event";
+import { EVENTS, type DormantEvent } from "../lib/events";
+import { listDormantApps } from "../lib/resources";
 import { MarketView } from "./MarketView";
 import { NotificationCenter } from "./NotificationCenter";
 import { ApprovalCenter } from "./ApprovalCenter";
@@ -90,6 +94,8 @@ export function Shell() {
   const [auditing, setAuditing] = useState(false);
   const [connectorSettings, setConnectorSettings] = useState(false);
   const [modelSettings, setModelSettings] = useState(false);
+  const [resources, setResources] = useState(false);
+  const [dormant, setDormant] = useState<string[]>([]);
   const [market, setMarket] = useState(false);
   const [notifications, setNotifications] = useState(false);
   const [approvals, setApprovals] = useState(false);
@@ -99,7 +105,12 @@ export function Shell() {
   // 也不会让向导在每次启动都出现——按非首次启动处理，错误在「模型与密钥」页展示。
   const [providersErr, setProvidersErr] = useState<string | null>(null);
 
-  const refresh = () => listApps().then(setApps).catch(() => setApps([]));
+  const refreshDormant = () =>
+    listDormantApps().then((d) => setDormant(Array.isArray(d) ? d : [])).catch(() => setDormant([]));
+  const refresh = () => {
+    refreshDormant();
+    return listApps().then(setApps).catch(() => setApps([]));
+  };
   useEffect(() => { refresh(); }, []);
   useEffect(() => {
     listProviders()
@@ -108,6 +119,21 @@ export function Shell() {
         setProvidersErr(String(e));
         setHasKey(true);
       });
+  }, []);
+
+  // 空闲回收：后端关掉应用后发 app-dormant；若正是当前打开的那个，回到应用网格。
+  const refreshDormantRef = useRef(refreshDormant);
+  refreshDormantRef.current = refreshDormant;
+  const openRef = useRef(open);
+  openRef.current = open;
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let gone = false;
+    listen<DormantEvent>(EVENTS.dormant, (e) => {
+      if (openRef.current?.appId === e.payload.app_id) setOpen(null);
+      refreshDormantRef.current();
+    }).then((u) => (gone ? u() : (off = u)));
+    return () => { gone = true; off?.(); };
   }, []);
 
   useEffect(() => {
@@ -126,6 +152,7 @@ export function Shell() {
   async function openApp(appId: string) {
     const slot = await invoke<number>("open_app", { appId });
     setOpen({ appId, slot });
+    refreshDormant();
   }
 
   async function closeApp() {
@@ -167,6 +194,16 @@ export function Shell() {
           <ConnectorSettings onClose={() => setConnectorSettings(false)} />
         ) : modelSettings ? (
           <ModelSettings onClose={() => setModelSettings(false)} onProvidersLoaded={() => setProvidersErr(null)} />
+        ) : resources ? (
+          <ResourcePanel
+            apps={apps}
+            onClose={() => setResources(false)}
+            onCloseApp={async (appId) => {
+              await invoke("close_app", { appId });
+              if (open?.appId === appId) setOpen(null);
+              refresh();
+            }}
+          />
         ) : market ? (
           <MarketView onClose={() => setMarket(false)} onInstalled={refresh} />
         ) : notifications ? (
@@ -195,7 +232,7 @@ export function Shell() {
             onCancel={() => setInstalling(false)}
           />
         ) : apps.length > 0 ? (
-          <AppGrid apps={apps} onOpen={openApp} />
+          <AppGrid apps={apps} onOpen={openApp} dormant={dormant} />
         ) : (
           <Chat />
         )}
@@ -206,6 +243,7 @@ export function Shell() {
         onAudit={() => setAuditing(true)}
         onConnectorSettings={() => setConnectorSettings(true)}
         onModelSettings={() => setModelSettings(true)}
+        onResources={() => setResources(true)}
         onMarket={() => setMarket(true)}
         onNotifications={() => setNotifications(true)}
         onApprovals={() => setApprovals(true)}

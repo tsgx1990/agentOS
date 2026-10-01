@@ -44,3 +44,10 @@ test("三种沙盒状态分别渲染对应徽标（不阻塞卡片渲染）", as
   expect(screen.getByText("未沙盒·受限")).toBeTruthy();
   expect(screen.getByText("本地信任")).toBeTruthy();
 });
+
+test("dormant 含的应用显示「休眠」，其余仍显示「空闲」", async () => {
+  invokeMock.mockResolvedValue({ sandboxed: true, platform: "macos", restricted: false });
+  render(<AppGrid apps={[app("first", true), app("second", true)]} onOpen={() => {}} dormant={["second"]} />);
+  expect(screen.getAllByText("休眠")).toHaveLength(1);
+  expect(screen.getAllByText("空闲")).toHaveLength(1);
+});

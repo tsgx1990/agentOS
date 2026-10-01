@@ -29,6 +29,7 @@ export function SessionPanel({
   onAudit,
   onConnectorSettings,
   onModelSettings,
+  onResources,
   onMarket,
   onNotifications,
   onApprovals,
@@ -39,6 +40,7 @@ export function SessionPanel({
   onAudit?: () => void;
   onConnectorSettings?: () => void;
   onModelSettings?: () => void;
+  onResources?: () => void;
   onMarket?: () => void;
   onNotifications?: () => void;
   onApprovals?: () => void;
@@ -113,6 +115,10 @@ export function SessionPanel({
 
       {onModelSettings && (
         <button className="session-install-btn" onClick={onModelSettings}>模型与密钥</button>
+      )}
+
+      {onResources && (
+        <button className="session-install-btn" onClick={onResources}>资源</button>
       )}
 
       {onMarket && (

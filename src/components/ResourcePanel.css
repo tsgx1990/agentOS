@@ -1,0 +1,513 @@
+/* 「资源」面板：只经 src/styles/tokens.css 的变量取色，风格对齐「模型与密钥」设置页。 */
+.rp {
+  font-family: var(--font-ui);
+  color: var(--text-primary);
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px 28px 48px;
+  box-sizing: border-box;
+  container-type: inline-size;
+  height: 100%;
+  overflow-y: auto;
+}
+.rp *,
+.rp *::before,
+.rp *::after {
+  box-sizing: border-box;
+}
+.rp-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.rp-header h2 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0.01em;
+}
+.rp-header p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.rp-error {
+  margin: 14px 0 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-nav-item);
+  font-size: 13px;
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+}
+
+/* 汇总 */
+.rp-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-card-gap);
+  margin-top: 20px;
+}
+.rp-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+}
+.rp-stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.rp-stat b {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.rp-stat .rp-stat-soft {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 28px;
+}
+
+/* 分区 */
+.rp-section {
+  margin-top: 28px;
+}
+.rp-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+.rp-section-title span {
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--chip-idle-bg);
+  border-radius: 999px;
+  padding: 0 7px;
+}
+.rp-empty {
+  margin: 0;
+  padding: 18px 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  background: var(--color-card-bg);
+  border: 1px dashed var(--color-card-border);
+  border-radius: var(--radius-card);
+}
+
+/* 通用控件 */
+.rp-btn {
+  border: 1px solid var(--color-card-border);
+  background: var(--color-card-bg);
+  color: var(--text-primary);
+  border-radius: var(--radius-nav-item);
+  padding: 5px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rp-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.rp-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.rp-btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--text-on-accent);
+}
+.rp-btn-primary:hover:not(:disabled) {
+  color: var(--text-on-accent);
+  filter: brightness(1.08);
+}
+.rp-btn:focus-visible,
+.rp input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.rp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.rp-chip {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.rp-chip-run {
+  background: var(--chip-run-bg);
+  color: var(--chip-run-fg);
+}
+.rp-chip-warn {
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+}
+.rp-chip-idle {
+  background: var(--chip-idle-bg);
+  color: var(--chip-idle-fg);
+}
+.rp-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.rp-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.rp-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+}
+.rp-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rp-switch.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.rp-switch input {
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+/* A：表格式 */
+.rp-tablewrap {
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+.rp-gap {
+  margin-top: 10px;
+}
+.rp-table td.rp-col-name .rp-chip {
+  display: inline-block;
+  margin: 2px 0 0 8px;
+}
+.rp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.rp-table th {
+  padding: 9px 12px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-label);
+  background: var(--color-nav-bg);
+  border-bottom: 1px solid var(--color-card-border);
+  white-space: nowrap;
+}
+.rp-table td {
+  padding: 10px 12px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--color-panel-divider);
+}
+.rp-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.rp-table tbody tr:hover {
+  background: var(--color-ground);
+}
+.rp-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rp-table td.num {
+  color: var(--text-secondary);
+}
+.rp-table .rp-col-name {
+  display: table-cell;
+  width: 100%;
+  min-width: 120px;
+}
+.rp-table td.rp-col-name {
+  display: table-cell;
+}
+.rp-table td.rp-col-name > * + * {
+  margin-left: 8px;
+}
+.rp-table td.rp-col-name .rp-sub {
+  display: block;
+  margin: 2px 0 0;
+}
+
+/* B：卡片式 */
+.rp-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-card-gap);
+}
+.rp-card {
+  padding: 14px 16px;
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+}
+.rp-card:hover {
+  box-shadow: var(--card-hover-shadow);
+}
+.rp-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.rp-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.rp-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+.rp-big {
+  font-size: 18px;
+  font-weight: 650;
+  min-width: 78px;
+  font-variant-numeric: tabular-nums;
+}
+.rp-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--chip-idle-bg);
+  overflow: hidden;
+  min-width: 0;
+}
+.rp-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+.rp-bar-thin {
+  height: 5px;
+  margin: 8px 0 6px;
+}
+.rp-pct {
+  min-width: 38px;
+  text-align: right;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.rp-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 28px;
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-panel-divider);
+}
+.rp-facts div {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.rp-facts dt {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.rp-facts dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.rp-minis {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-card-gap);
+}
+.rp-mini {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px;
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+}
+.rp-mini .rp-big {
+  margin-top: 8px;
+  font-size: 16px;
+}
+
+/* 面板 / 策略 / 磁盘 */
+.rp-panel {
+  padding: 14px 16px;
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rp-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.rp-check input {
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+.rp-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.rp-field input {
+  width: 84px;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: var(--radius-nav-item);
+  border: 1px solid var(--color-card-border);
+  background: var(--color-ground);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.rp-field input[aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+.rp-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-label);
+}
+.rp-hint-warn {
+  color: var(--color-danger);
+}
+.rp-disk {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-card-gap);
+}
+.rp-disk li {
+  grid-column: span 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-card);
+}
+.rp-disk span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.rp-disk b {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.rp-clear {
+  margin-top: 14px;
+}
+.rp-confirm {
+  padding: 12px 14px;
+  border-radius: var(--radius-card);
+  background: var(--chip-warn-bg);
+  color: var(--chip-warn-fg);
+}
+.rp-confirm p {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.rp-done {
+  font-size: 13px;
+  color: var(--chip-ready-fg);
+  font-weight: 500;
+}
+
+@container (min-width: 700px) {
+  .rp-disk {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .rp-disk li {
+    grid-column: auto;
+  }
+}
+
+/* 窄屏：先收次要列，再收汇总 */
+@container (max-width: 640px) {
+  .rp {
+    padding: 20px 16px 36px;
+  }
+  .rp-col-time,
+  .rp-col-proc {
+    display: none;
+  }
+  .rp-table .rp-actions {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+  .rp-table th,
+  .rp-table td {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .rp-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.rp-hint.rp-gap {
+  margin-top: 10px;
+}

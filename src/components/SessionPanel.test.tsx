@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { test, expect, vi, beforeEach } from "vitest";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -67,4 +67,18 @@ test("不传 onModelSettings 时不渲染「模型与密钥」入口按钮", asy
   invokeMock.mockResolvedValue({ input: 0, output: 0, cost: 0 });
   render(<SessionPanel />);
   expect(screen.queryByText("模型与密钥")).toBeNull();
+});
+
+test("传入 onResources 时渲染「资源」按钮，点击调用回调", async () => {
+  invokeMock.mockResolvedValue({ input: 0, output: 0, cost: 0 });
+  const onResources = vi.fn();
+  render(<SessionPanel onResources={onResources} />);
+  fireEvent.click(screen.getByText("资源"));
+  expect(onResources).toHaveBeenCalledTimes(1);
+});
+
+test("不传 onResources 时不渲染「资源」按钮", async () => {
+  invokeMock.mockResolvedValue({ input: 0, output: 0, cost: 0 });
+  render(<SessionPanel />);
+  expect(screen.queryByText("资源")).toBeNull();
 });

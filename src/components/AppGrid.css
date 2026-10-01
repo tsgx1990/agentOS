@@ -77,6 +77,11 @@
   color: var(--chip-idle-fg);
 }
 
+.chip-dormant {
+  background: var(--chip-run-bg);
+  color: var(--chip-run-fg);
+}
+
 .app-card-unverified {
   font-size: 11px;
   color: var(--chip-warn-fg);

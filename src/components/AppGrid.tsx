@@ -65,7 +65,7 @@ function SandboxBadge({ appId }: { appId: string }) {
  * 应用自身无法伪造这块标识（视觉全走 tokens.css，见 C4a §2.2/§2.5）。
  * 本组件本任务不接入 Shell 中区（T16 再接）。
  */
-export function AppGrid({ apps, onOpen }: { apps: InstalledApp[]; onOpen: (appId: string) => void }) {
+export function AppGrid({ apps, onOpen, dormant = [] }: { apps: InstalledApp[]; onOpen: (appId: string) => void; dormant?: string[] }) {
   return (
     <div className="app-grid-root">
       {CATEGORIES.map((cat) => {
@@ -82,7 +82,11 @@ export function AppGrid({ apps, onOpen }: { apps: InstalledApp[]; onOpen: (appId
                 <button className="app-card" key={a.app_id} onClick={() => onOpen(a.app_id)}>
                   <span className="app-card-icon" aria-hidden />
                   <span className="app-card-name">{a.display_name}</span>
-                  <span className="chip chip-idle">空闲</span>
+                  {dormant.includes(a.app_id) ? (
+                    <span className="chip chip-dormant" title="空闲超时已自动关闭以释放内存，点击重新打开">休眠</span>
+                  ) : (
+                    <span className="chip chip-idle">空闲</span>
+                  )}
                   <SandboxBadge appId={a.app_id} />
                   {!a.trusted && <span className="app-card-unverified">未验证·受限</span>}
                 </button>
