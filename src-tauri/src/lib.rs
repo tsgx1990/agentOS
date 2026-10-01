@@ -239,6 +239,8 @@ async fn uninstall_app(
     // 若进程还开着这些目录会导致 in-flight 写丢失。close_app 会 kill + 从 app_sessions 摘除 +
     // 释放 slot/gate；若该 app 未打开则是无害 no-op。
     let _ = session_mgr::close_app(app.clone(), app_id.clone()).await;
+    // 卸载后不应再显示「休眠」：live 与 dormant 记录一并清掉。
+    app.state::<AppState>().activity.forget(&app_id);
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let layout = DataLayout::new(root);
     let reg = registry::RegistryStore::new(layout.registry_path());
@@ -556,6 +558,25 @@ async fn resource_report(app: tauri::AppHandle) -> Result<resources::ResourceRep
         });
     }
 
+    // 豁免原因：与回收判定同一个 `idle_verdict`，面板据此显示「不会休眠：原因」。
+    let exempt: std::collections::HashMap<String, String> = {
+        let layout = DataLayout::new(app.path().app_data_dir().map_err(|e| e.to_string())?);
+        let policy = idle::IdlePolicyStore::new(&layout).load();
+        let now = idle::now_secs();
+        let mut m = std::collections::HashMap::new();
+        for r in &roots {
+            let Some(act) = &r.activity else { continue };
+            let pending = idle::has_pending_approval(&layout, &r.app_id);
+            let has_bg = !r.bg_pids.is_empty();
+            if let idle::Verdict::Keep(Some(e)) =
+                idle::idle_verdict(&r.app_id, act, &policy, now, pending, has_bg)
+            {
+                m.insert(r.app_id.clone(), e.label().to_string());
+            }
+        }
+        m
+    };
+
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let st = handle.state::<AppState>();
@@ -576,6 +597,32 @@ async fn resource_report(app: tauri::AppHandle) -> Result<resources::ResourceRep
     })
     .await
     .map_err(|e| format!("资源采样失败：{e}"))
+    .map(|mut rep| {
+        for a in &mut rep.apps {
+            a.exempt = exempt.get(&a.app_id).cloned();
+        }
+        rep
+    })
+}
+
+/// P6-F：读空闲回收策略（文件缺失或损坏 → 默认值）。
+#[tauri::command]
+fn get_idle_policy(app: tauri::AppHandle) -> Result<idle::IdlePolicy, String> {
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(idle::IdlePolicyStore::new(&DataLayout::new(root)).load())
+}
+
+/// P6-F：保存空闲回收策略（时长越界会报错，文件保持不变）。
+#[tauri::command]
+fn set_idle_policy(app: tauri::AppHandle, policy: idle::IdlePolicy) -> Result<(), String> {
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    idle::IdlePolicyStore::new(&DataLayout::new(root)).save(&policy)
+}
+
+/// P6-F：当前处于「休眠」状态的应用 id（已排序）。
+#[tauri::command]
+fn list_dormant_apps(app: tauri::AppHandle) -> Vec<String> {
+    app.state::<AppState>().activity.dormant()
 }
 
 /// P6-D Task5：按 (provider, model) 拆分的用量；`app_id` 为空返回所有应用。
@@ -916,6 +963,71 @@ async fn start_scheduler_loop(app: tauri::AppHandle) {
         let is_app_open = move |id: &str| open_ids.contains(id);
 
         scheduler::run_scheduler_tick_cycle(&scheduler, &clock, &notifications, &is_app_open).await;
+    }
+}
+
+/// 维护循环周期：只做空闲回收，独立于调度 tick。
+const MAINTENANCE_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// P6-F：空闲回收后台循环。**不并入调度循环**——`Scheduler::tick` 会等本轮任务全部
+/// 跑完才返回，任务可能跑几分钟，回收会被拖住。每轮：计划 → （有候选才）在
+/// `spawn_blocking` 里采一次进程表量候选子树 RSS（关掉之后就量不到了）→ 回收 →
+/// 对每个被回收的应用发全局事件 `app-dormant`。
+async fn start_maintenance_loop(app: tauri::AppHandle) {
+    let root = match app.path().app_data_dir() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("维护循环启动失败：无法解析 app_data_dir：{e}");
+            return;
+        }
+    };
+    let layout = DataLayout::new(root);
+    loop {
+        tokio::time::sleep(MAINTENANCE_TICK_INTERVAL).await;
+        let state = app.state::<AppState>();
+        let picks = idle::plan_idle_recycle(&state, &layout, idle::now_secs()).await;
+        if picks.is_empty() {
+            continue;
+        }
+        let handle = app.clone();
+        let cands = picks.clone();
+        let rss: Vec<Option<u64>> = tauri::async_runtime::spawn_blocking(move || {
+            let st = handle.state::<AppState>();
+            let (table, _) = st
+                .sampler
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .sample();
+            let tree: Vec<(u32, Option<u32>)> = table.iter().map(|p| (p.pid, p.ppid)).collect();
+            cands
+                .iter()
+                .map(|c| {
+                    c.root_pid.map(|root| {
+                        let pids: std::collections::HashSet<u32> =
+                            resources::descendants(&tree, root).into_iter().collect();
+                        table
+                            .iter()
+                            .filter(|p| pids.contains(&p.pid))
+                            .map(|p| p.rss_bytes)
+                            .sum()
+                    })
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_else(|_| vec![None; picks.len()]);
+        let notifications =
+            notifications::NotificationStore::new(layout.clone(), state.mcp.clone());
+        let done = idle::recycle(
+            &state,
+            &notifications,
+            picks.into_iter().zip(rss).collect(),
+            idle::now_secs(),
+        )
+        .await;
+        for r in done {
+            let _ = app.emit("app-dormant", &r);
+        }
     }
 }
 
@@ -1684,6 +1796,9 @@ pub fn run() {
             list_pending_skill_installs,
             skill_respond_install_confirm,
             resource_report,
+            get_idle_policy,
+            set_idle_policy,
+            list_dormant_apps,
         ]);
 
     // 为每个界面槽位注册一个独立的自定义 scheme（sagent0..sagent{SLOT_COUNT-1}），
@@ -1829,6 +1944,11 @@ pub fn run() {
             let scheduler_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 start_scheduler_loop(scheduler_handle).await;
+            });
+            // P6-F：空闲回收维护循环（独立于调度 tick，见 `start_maintenance_loop`）。
+            let maintenance_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                start_maintenance_loop(maintenance_handle).await;
             });
             Ok(())
         })

@@ -162,6 +162,11 @@ impl DataLayout {
         self.root.join("model-overrides.json")
     }
 
+    /// 空闲回收策略: `root/idle-policy.json`（host-global 单文件，整份 JSON + 原子写）。
+    pub fn idle_policy_path(&self) -> PathBuf {
+        self.root.join("idle-policy.json")
+    }
+
     /// 取得该应用的一个「应用可写」私有目录（`kind` 为 `apps` / `agenthome` / `sessions`
     /// 之一），返回**已规范化的字面路径**：`<canonical(root)>/<kind>/<app_id>`。
     ///
@@ -268,6 +273,15 @@ pub fn ensure_real_dir(expected: &std::path::Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn idle_policy_path_under_root() {
+        let layout = DataLayout::new(std::path::PathBuf::from("/data"));
+        assert_eq!(
+            layout.idle_policy_path(),
+            std::path::PathBuf::from("/data/idle-policy.json")
+        );
+    }
 
     #[test]
     fn session_dir_is_per_app() {

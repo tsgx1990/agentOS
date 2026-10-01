@@ -1152,10 +1152,12 @@ static HEADLESS_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 
 /// RAII 登记：构造时写入登记表，Drop 时移除。`run_headless_session` 是定时任务与
 /// 被调方会话的唯一生产点，登记放在这里（进程级静态表，`spawn_call_session` 签名不动）。
-pub(crate) struct HeadlessGuard(u64);
+#[doc(hidden)]
+pub struct HeadlessGuard(u64);
 
 impl HeadlessGuard {
-    pub(crate) fn register(app_id: &str, pid: Option<u32>) -> Self {
+    #[doc(hidden)]
+    pub fn register(app_id: &str, pid: Option<u32>) -> Self {
         let id = HEADLESS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         HEADLESS.lock().unwrap_or_else(|e| e.into_inner()).insert(
             id,
