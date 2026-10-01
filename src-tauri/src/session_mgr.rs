@@ -98,6 +98,15 @@ pub fn build_settings_json(
 ///   桥"），因此不能靠这里的调用兜底——它在自己的 `preview_extra_args` 里
 ///   独立追加同一个 `"--no-skills"`（审查修复轮 1 Important：此前遗漏，预览
 ///   会话会看见真实主目录下的任意技能，同一个泄漏口子在第四条路径上重演）。
+///
+/// - **沙盒可写基座**：`sandbox_write` 恒含该应用自己的 `agent_home_dir`
+///   （`PI_CODING_AGENT_DIR`）与 `session_dir`（`PI_CODING_AGENT_SESSION_DIR`）。pi 启动时要在
+///   agent home 里建 `trust.json`/`settings.json` 的锁、读写凭据存储、加载 `models.json`，
+///   会话文件写在会话目录；这两处都不在 `$APP_DATA`（`<root>/apps/<id>`）里，不放行的话真实
+///   安装（数据根在用户目录下）里沙盒应用的 pi 在启动阶段就崩溃。放行是安全的：这两个目录
+///   是该应用私有的（路径按 app_id 隔离，不含数据根与其它应用的目录）；宿主每次拉起前都会
+///   重写 `settings.json`/`models.json`，应用篡改它们只影响它自己、越不出沙盒；`models.json`
+///   里只有 `${VAR}` 引用，没有密钥字面值。`assemble_launch_plan` 合并能力贡献时保留这两项。
 pub fn build_launch(app: &InstalledApp, layout: &DataLayout, hosttools_dir: &Path) -> LaunchPlan {
     let pkg = layout.packages_dir(&app.app_id);
     let s = |p: PathBuf| p.to_string_lossy().to_string();
@@ -124,7 +133,11 @@ pub fn build_launch(app: &InstalledApp, layout: &DataLayout, hosttools_dir: &Pat
         extra_args,
         env,
         sandbox_read: vec![],
-        sandbox_write: vec![],
+        // 该应用自己的 agent home 与会话目录（见函数文档「沙盒可写基座」）。
+        sandbox_write: vec![
+            layout.agent_home_dir(&app.app_id),
+            layout.session_dir(&app.app_id),
+        ],
     }
 }
 
@@ -147,8 +160,9 @@ pub fn build_launch(app: &InstalledApp, layout: &DataLayout, hosttools_dir: &Pat
 ///   + `contribution.extra_args`
 ///   + 对每个 `contribution.bridges` 追加一对 `["-e", hosttools_dir/<桥文件>]`；
 /// - `env` = `build_launch.env` + `contribution.env`；
-/// - `sandbox_read`/`sandbox_write` = `contribution.sandbox_read`/`sandbox_write`
-///   原样透传（当前唯一贡献者是 `filesystem` 能力，见其 `launch` 实现）。
+/// - `sandbox_read`/`sandbox_write` = `build_launch` 基座（该应用自己的 agent home 与会话目录）
+///   ∪ `contribution.sandbox_read`/`sandbox_write`，去重保序（当前唯一贡献者是 `filesystem`
+///   能力，见其 `launch` 实现）。
 pub fn assemble_launch_plan(
     app: &InstalledApp,
     manifest: &crate::pkg::Manifest,
@@ -211,8 +225,17 @@ pub fn assemble_launch_plan(
             .push(hosttools_dir.join(b).to_string_lossy().to_string());
     }
     plan.env.extend(contribution.env.iter().cloned());
-    plan.sandbox_read = contribution.sandbox_read.clone();
-    plan.sandbox_write = contribution.sandbox_write.clone();
+    // 合并去重而不是覆盖：基座里的 agent home / 会话目录必须保留。
+    for p in &contribution.sandbox_read {
+        if !plan.sandbox_read.contains(p) {
+            plan.sandbox_read.push(p.clone());
+        }
+    }
+    for p in &contribution.sandbox_write {
+        if !plan.sandbox_write.contains(p) {
+            plan.sandbox_write.push(p.clone());
+        }
+    }
     plan
 }
 
@@ -1822,6 +1845,48 @@ mod tests {
                 "不应因为补 --no-skills 丢了原有的 --tools：{args:?}"
             );
         }
+    }
+
+    #[test]
+    fn build_launch_sandbox_write_is_exactly_own_agent_home_and_session_dir() {
+        let layout = DataLayout::new(Path::new("/data").to_path_buf());
+        let plan = build_launch(&app("a", false), &layout, Path::new("/ht"));
+        assert_eq!(
+            plan.sandbox_write,
+            vec![layout.agent_home_dir("a"), layout.session_dir("a")]
+        );
+        // 绝不含数据根、其它应用的目录，也不含 $APP_DATA 之外的共享目录。
+        for p in &plan.sandbox_write {
+            assert_ne!(p, Path::new("/data"));
+            assert!(!p.ends_with("b"), "{p:?}");
+            assert!(!p.starts_with("/data/apps"), "{p:?}");
+        }
+        assert!(plan.sandbox_read.is_empty());
+    }
+
+    #[test]
+    fn assemble_keeps_base_sandbox_write_and_merges_contribution_without_dups() {
+        let layout = DataLayout::new(Path::new("/data").to_path_buf());
+        let extra = PathBuf::from("/data/shared/x");
+        let contribution = LaunchContribution {
+            sandbox_read: vec![PathBuf::from("/r")],
+            sandbox_write: vec![extra.clone(), layout.session_dir("a")],
+            ..Default::default()
+        };
+        let plan = assemble_launch_plan(
+            &fake_app("a", false),
+            &manifest_min(),
+            &contribution,
+            &layout,
+            Path::new("/ht"),
+            true,
+            &ModelLaunch::default(),
+        );
+        assert_eq!(
+            plan.sandbox_write,
+            vec![layout.agent_home_dir("a"), layout.session_dir("a"), extra]
+        );
+        assert_eq!(plan.sandbox_read, vec![PathBuf::from("/r")]);
     }
 
     #[test]
