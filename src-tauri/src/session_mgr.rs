@@ -1580,11 +1580,18 @@ const PREVIEW_SESSION_SUBDIR: &str = ".superagent-preview-session";
 /// 尽最大努力清理 T6 预览会话在 `staging_dir` 内留下的两个隐藏临时子目录。
 /// `remove_dir_all` 对不存在的路径返回 `Err`，这里全部吞掉——清理是"锦上添花"
 /// 的收尾动作，它自身失败不应该覆盖/掩盖调用方真正关心的 spawn/ready 结果。
-fn cleanup_preview_scratch_dirs(staging_dir: &Path) {
+fn cleanup_preview_scratch_dirs(layout: &DataLayout, draft_id: &str) {
+    // 预览期间草稿应用对暂存目录可写，可能已把它换成链接：清理前重新经
+    // `checked_maker_staging_dir` 校验，不合格就什么都不删（不能删到链接目标里去）。
+    let Ok(staging_dir) = layout.checked_maker_staging_dir(draft_id) else {
+        return;
+    };
     // 假设：这两个固定名字是 host 内部的运行期暂存名（点前缀），不会与草稿自己的
     // 文件撞名——不对草稿内容做存在性检查/改名让路，撞了就是静默吞掉草稿那份同名目录。
-    let _ = std::fs::remove_dir_all(staging_dir.join(PREVIEW_AGENT_HOME_SUBDIR));
-    let _ = std::fs::remove_dir_all(staging_dir.join(PREVIEW_SESSION_SUBDIR));
+    for sub in [PREVIEW_AGENT_HOME_SUBDIR, PREVIEW_SESSION_SUBDIR] {
+        // 子目录若被换成链接，`remove_dir_all` 只删链接本身（不跟随）。
+        let _ = std::fs::remove_dir_all(staging_dir.join(sub));
+    }
 }
 
 /// 预览会话专用、与清单/权限无关的固定 `extra_args`：抽成纯函数（审查修复轮 1
@@ -1691,14 +1698,14 @@ pub async fn spawn_preview_session(layout: &DataLayout, draft_id: &str) -> Resul
     let (mut session, mut rx) = match spawn_result {
         Ok(pair) => pair,
         Err(e) => {
-            cleanup_preview_scratch_dirs(staging_dir);
+            cleanup_preview_scratch_dirs(layout, draft_id);
             return Err(format!("预览会话启动失败：{e}"));
         }
     };
 
     if let Err(e) = session.send_get_session_stats().await {
         session.kill().await;
-        cleanup_preview_scratch_dirs(staging_dir);
+        cleanup_preview_scratch_dirs(layout, draft_id);
         return Err(format!("预览会话探测 get_session_stats 发送失败：{e}"));
     }
 
@@ -1723,7 +1730,7 @@ pub async fn spawn_preview_session(layout: &DataLayout, draft_id: &str) -> Resul
     }
 
     session.kill().await;
-    cleanup_preview_scratch_dirs(staging_dir);
+    cleanup_preview_scratch_dirs(layout, draft_id);
 
     if ready {
         Ok(())
@@ -2600,6 +2607,32 @@ mod tests {
             assert!(e.contains("符号链接") || e.contains("真实目录"), "{e}");
         }
         assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
+    }
+
+    /// M-2：预览期间暂存目录被换成链接后，清理不得删到链接目标里。
+    #[test]
+    fn cleanup_preview_scratch_dirs_does_not_follow_swapped_staging_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        // 正常：两个子目录被清掉。
+        let st = layout.checked_maker_staging_dir("d").unwrap();
+        for sub in [PREVIEW_AGENT_HOME_SUBDIR, PREVIEW_SESSION_SUBDIR] {
+            std::fs::create_dir_all(st.join(sub)).unwrap();
+        }
+        cleanup_preview_scratch_dirs(&layout, "d");
+        assert!(!st.join(PREVIEW_AGENT_HOME_SUBDIR).exists());
+        assert!(!st.join(PREVIEW_SESSION_SUBDIR).exists());
+        // 暂存目录被换成指向受害目录的链接：受害目录里的同名子目录不能被删。
+        let victim = tmp.path().join("victim");
+        for sub in [PREVIEW_AGENT_HOME_SUBDIR, PREVIEW_SESSION_SUBDIR] {
+            std::fs::create_dir_all(victim.join(sub)).unwrap();
+        }
+        std::fs::remove_dir_all(&st).unwrap();
+        std::os::unix::fs::symlink(&victim, &st).unwrap();
+        cleanup_preview_scratch_dirs(&layout, "d");
+        for sub in [PREVIEW_AGENT_HOME_SUBDIR, PREVIEW_SESSION_SUBDIR] {
+            assert!(victim.join(sub).exists(), "{sub} 被误删");
+        }
     }
 
     // ---- audit_verdict_for_tool_execution ----

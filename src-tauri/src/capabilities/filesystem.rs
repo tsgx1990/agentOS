@@ -141,37 +141,37 @@ fn expand_and_check_base(
 
 /// 授权目录的「真实性」检查（I-c）：用户授权的目录由应用在沙盒里读写，应用可以把授权的
 /// 子目录改名后换成链接，指向**同一标准目录里的其它位置**——规范化后仍在 `base` 之内，
-/// 单靠「规范化后仍在 base 内」拦不住，但已超出用户同意的范围。所以对每个贡献给沙盒的路径要求：
-/// 存在时不是符号链接，且规范化后**等于**按字面从已规范化的 `base` 推出的预期路径
-/// （这同时挡住中间某一级被换成链接）。返回 `Ok(None)` 表示路径尚不存在，`Ok(Some(is_dir))`
-/// 表示存在且合格，`Err` 表示被换链（可读错误，调用方 fail-closed、不贡献该路径）。
-fn check_real_literal(spec: &str, var: &str, literal: &Path) -> Result<Option<bool>, String> {
-    let not_real = |why: &str| {
-        format!(
-            "路径声明 {spec} 的目录（{}）{why}，已不是授权时的真实位置（可能被替换成了符号链接），拒绝启动",
+/// 单靠「规范化后仍在 base 内」拦不住，但已超出用户同意的范围。所以逐级用 `lstat`
+/// 拒绝符号链接（这才是要防的东西）。**不**要求整条路径规范化后等于字面路径：本机
+/// `realpath` 会返回磁盘上的真实大小写与 Unicode 形式（NFD），清单写 `exports`、磁盘上是
+/// `Exports` 的合法目录不能误拒；通过检查后，调用方改用**规范化后的路径**作为授权路径交给沙盒
+/// （内核「可写路径规范化等于自身」断言因此照样成立）。
+/// 返回 `Ok(None)` 表示路径尚不存在，`Ok(Some(is_dir))` 表示存在且不是链接，`Err` 表示是链接。
+fn check_not_symlink(spec: &str, literal: &Path) -> Result<Option<bool>, String> {
+    match std::fs::symlink_metadata(literal) {
+        Ok(m) if m.file_type().is_symlink() => Err(format!(
+            "路径声明 {spec} 的目录（{}）是符号链接，已不是授权时的真实位置，拒绝启动",
             literal.display()
-        )
-    };
-    let meta = match std::fs::symlink_metadata(literal) {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(format!(
-                "检查 {var} 下的路径 {} 失败：{e}",
-                literal.display()
-            ))
-        }
-    };
-    if meta.file_type().is_symlink() {
-        return Err(not_real("是符号链接"));
-    }
-    match std::fs::canonicalize(literal) {
-        Ok(c) if c == literal => Ok(Some(meta.is_dir())),
-        Ok(_) => Err(not_real(
-            "规范化后与预期路径不一致（路径中某一级是符号链接）",
         )),
-        Err(e) => Err(format!("规范化 {} 失败：{e}", literal.display())),
+        Ok(m) => Ok(Some(m.is_dir())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("检查路径 {} 失败：{e}", literal.display())),
     }
+}
+
+/// 规范化 `literal`（所有分量已逐级确认不是链接）作为授权路径；结果必须仍在 `canon_base`
+/// 之内（防御性复核，正常不会触发）。
+fn canonical_authorized(spec: &str, canon_base: &Path, literal: &Path) -> Result<PathBuf, String> {
+    let canon = std::fs::canonicalize(literal)
+        .map_err(|e| format!("规范化 {} 失败：{e}", literal.display()))?;
+    if !canon.starts_with(canon_base) {
+        return Err(format!(
+            "路径声明 {spec} 解析后（{}）不在 {} 之内，拒绝启动",
+            canon.display(),
+            canon_base.display()
+        ));
+    }
+    Ok(canon)
 }
 
 /// 把 spec 的子路径按字面接到已规范化的 `canon_base` 上（只取 Normal 分量）。
@@ -206,12 +206,15 @@ pub(crate) fn confined_expand_with(
     let Some((_expanded, canon_base)) = expand_and_check_base(spec, base, home)? else {
         return Ok(None);
     };
-    let (var, _) = split(spec);
-    let mut literal = canon_base;
+    let mut literal = canon_base.clone();
     for c in literal_components(spec) {
         literal.push(c);
+        // 逐级 lstat：任何一级是链接即拒；某一级尚不存在视为「还没发生」，跳过。
+        if check_not_symlink(spec, &literal)?.is_none() {
+            return Ok(None);
+        }
     }
-    Ok(check_real_literal(spec, var, &literal)?.map(|_| literal))
+    canonical_authorized(spec, &canon_base, &literal).map(Some)
 }
 
 /// WRITE 展开：候选目录允许尚不存在（清单声明的写目录，安装/首次启动时通常还没创建
@@ -231,11 +234,10 @@ pub(crate) fn confined_expand_write_with(
     let Some((_expanded, canon_base)) = expand_and_check_base(spec, base, home)? else {
         return Ok(None);
     };
-    let (var, _) = split(spec);
-    let mut cur = canon_base;
+    let mut cur = canon_base.clone();
     for c in literal_components(spec) {
         cur.push(c);
-        match check_real_literal(spec, var, &cur)? {
+        match check_not_symlink(spec, &cur)? {
             Some(true) => {}
             Some(false) => {
                 return Err(format!(
@@ -250,13 +252,13 @@ pub(crate) fn confined_expand_write_with(
                 }
                 std::fs::create_dir(&cur)
                     .map_err(|e| format!("创建写目录 {} 失败：{e}", cur.display()))?;
-                if check_real_literal(spec, var, &cur)? != Some(true) {
+                if check_not_symlink(spec, &cur)? != Some(true) {
                     return Err(format!("创建后的写目录 {} 不合格，拒绝启动", cur.display()));
                 }
             }
         }
     }
-    Ok(Some(cur))
+    canonical_authorized(spec, &canon_base, &cur).map(Some)
 }
 
 fn resolved_home() -> Result<PathBuf, String> {
@@ -557,5 +559,42 @@ mod tests {
         let err = confined_expand_with("$DOWNLOADS/granted", &base, &home_path)
             .expect_err("换链的读目录必须被拒");
         assert!(err.contains("符号链接"), "{err}");
+    }
+
+    /// M-1：清单写 `exports`、磁盘上是 `Exports`（不区分大小写的文件系统）时，目录不是链接，
+    /// 必须照常授权，且交给沙盒的是规范化后的真实路径；区分大小写的文件系统上跳过。
+    #[test]
+    fn case_different_existing_dir_is_authorized_with_canonical_path() {
+        let (_h, home_path, base) = std_dir_with_swapped_link();
+        std::fs::create_dir_all(base.join("Exports/Sub")).unwrap();
+        if !base.join("exports").exists() {
+            eprintln!("skip: 文件系统区分大小写");
+            return;
+        }
+        let want = base.join("Exports");
+        let r = confined_expand_with("$DOWNLOADS/exports", &base, &home_path).unwrap();
+        assert_eq!(r, Some(want.clone()));
+        let w =
+            confined_expand_write_with("$DOWNLOADS/exports/sub", &base, &home_path, true).unwrap();
+        assert_eq!(w, Some(want.join("Sub")));
+        // 规范化等于自身：内核断言的前提
+        assert_eq!(std::fs::canonicalize(w.unwrap()).unwrap(), want.join("Sub"));
+    }
+
+    /// M-1：NFC 写法的清单、磁盘上 NFD 的目录名（可选：仅文件系统做归一化比较时有意义）。
+    #[test]
+    fn nfd_on_disk_nfc_in_manifest_is_authorized() {
+        let (_h, home_path, base) = std_dir_with_swapped_link();
+        let nfd = "e\u{301}tude"; // é 的 NFD 写法
+        let nfc = "\u{e9}tude";
+        std::fs::create_dir_all(base.join(nfd)).unwrap();
+        if !base.join(nfc).exists() {
+            eprintln!("skip: 文件系统不做 Unicode 归一化比较");
+            return;
+        }
+        let r = confined_expand_with(&format!("$DOWNLOADS/{nfc}"), &base, &home_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::canonicalize(&r).unwrap(), r);
     }
 }

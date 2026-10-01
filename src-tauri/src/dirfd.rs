@@ -165,7 +165,9 @@ mod unix_impl {
     }
 }
 
-// 非 unix 平台没有沙盒（沙盒只有 macOS seatbelt），这里退化为按路径操作，仅保证能编译。
+// 非 unix 平台退化实现：**仅为通过编译，当前不支持这些平台**——没有沙盒（沙盒只有 macOS
+// seatbelt），也没有任何抗换链保证：按路径操作、临时文件用固定名（不随机、不 O_EXCL）。
+// 真要支持这些平台，必须用对应平台的句柄式 API 重写，不能沿用这里的实现。
 #[cfg(not(unix))]
 pub fn identity_of_real_dir(path: &Path) -> Result<DirIdentity, String> {
     let m = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
