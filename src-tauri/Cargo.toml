@@ -19,6 +19,10 @@ serde_json = "1"
 semver = "1"
 tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros", "time", "net"] }
 thiserror = "1"
+# P6-F：资源面板按需采样进程树 RSS/CPU。license MIT。只开 system feature
+# （不要 disk/network/component/user）；macOS 上新增传递依赖 objc2-io-kit
+# （Zlib OR Apache-2.0 OR MIT），objc2-core-foundation 已在锁文件里。
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 # 平台原生后端：不开 feature 时 keyring v3 会静默退化为非持久化 mock 存储（进程内内存），
 # 表面能编译/能跑单测，但重启进程后 has_api_key 会读不到——彻底违背"存 OS 钥匙串"的需求。
 # apple-native → macOS/iOS 走 Keychain（security-framework）；windows-native → Windows 走 Credential Manager。

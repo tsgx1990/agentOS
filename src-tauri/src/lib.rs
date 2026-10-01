@@ -23,6 +23,7 @@ pub mod probe;
 pub mod providers;
 pub mod publish;
 pub mod registry;
+pub mod resources;
 pub mod rpc;
 pub mod sandbox;
 pub mod scheduler;
@@ -509,6 +510,72 @@ fn app_sandbox_status(app_id: String, app: tauri::AppHandle) -> Result<SandboxSt
 async fn app_usage(app_id: String, app: tauri::AppHandle) -> Result<usage::UsageResponse, String> {
     let state = app.state::<AppState>();
     Ok(state.usage.usage_response(&app_id).await)
+}
+
+/// P6-F：资源面板的一次采样。不缓存、不起后台循环——只有面板打开轮询时才会被调用，
+/// CPU% 即两次轮询之间的平均值。`sysinfo` 刷新在 `spawn_blocking` 里，不阻塞运行时。
+#[tauri::command]
+async fn resource_report(app: tauri::AppHandle) -> Result<resources::ResourceReport, String> {
+    let state = app.state::<AppState>();
+    // 现取各根 pid（不缓存：崩溃重启后 pid 会变）。锁 guard 在各自语句内释放，不跨 await。
+    let main_pid = {
+        let g = state.main_session.lock().await;
+        g.as_ref().and_then(|s| s.child_id())
+    };
+    let fg: Vec<(String, Option<u32>)> = {
+        let g = state.app_sessions.lock().await;
+        g.iter().map(|(id, s)| (id.clone(), s.child_id())).collect()
+    };
+    let mut bg: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
+    for h in session_mgr::running_headless_sessions() {
+        let e = bg.entry(h.app_id).or_default();
+        if let Some(pid) = h.pid {
+            e.push(pid);
+        }
+    }
+    let activity: std::collections::HashMap<String, idle::AppActivity> =
+        state.activity.snapshot().into_iter().collect();
+    let mcp = state.mcp.server_pids();
+
+    let mut roots: Vec<resources::AppRoots> = Vec::new();
+    for (id, pid) in fg {
+        roots.push(resources::AppRoots {
+            bg_pids: bg.remove(&id).unwrap_or_default(),
+            activity: activity.get(&id).cloned(),
+            app_id: id,
+            fg_pid: pid,
+        });
+    }
+    // 只有后台会话、没有前台会话的应用也要列出。
+    for (id, pids) in bg {
+        roots.push(resources::AppRoots {
+            activity: activity.get(&id).cloned(),
+            app_id: id,
+            fg_pid: None,
+            bg_pids: pids,
+        });
+    }
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let st = handle.state::<AppState>();
+        let (table, ready) = st
+            .sampler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sample();
+        resources::aggregate(
+            &table,
+            ready,
+            std::process::id(),
+            main_pid,
+            &roots,
+            &mcp,
+            idle::now_secs(),
+        )
+    })
+    .await
+    .map_err(|e| format!("资源采样失败：{e}"))
 }
 
 /// P6-D Task5：按 (provider, model) 拆分的用量；`app_id` 为空返回所有应用。
@@ -1616,6 +1683,7 @@ pub fn run() {
             skill_market_install,
             list_pending_skill_installs,
             skill_respond_install_confirm,
+            resource_report,
         ]);
 
     // 为每个界面槽位注册一个独立的自定义 scheme（sagent0..sagent{SLOT_COUNT-1}），

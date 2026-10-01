@@ -56,6 +56,9 @@ pub struct AppState {
     pub capabilities: std::sync::Arc<crate::capability::CapabilityRegistry>,
     /// P6-F：每应用的打开时刻 / 最近活动 / 回合状态 / 休眠集合（空闲回收与资源面板用）。
     pub activity: crate::idle::ActivityTracker,
+    /// P6-F：资源面板的进程表采样器（`resource_report` 在 `spawn_blocking` 里用；
+    /// 纯内存、不跨 `.await`，故用 `std::sync::Mutex`）。
+    pub sampler: std::sync::Mutex<crate::resources::ResourceSampler>,
 }
 
 // 手写 Default：SlotPool/ConcurrencyGate 需要带参数构造（容量/上限），
@@ -72,6 +75,7 @@ impl Default for AppState {
             usage: UsageAccumulator::new(),
             capabilities: std::sync::Arc::new(crate::capabilities::builtin()),
             activity: crate::idle::ActivityTracker::default(),
+            sampler: std::sync::Mutex::new(crate::resources::ResourceSampler::new()),
         }
     }
 }
