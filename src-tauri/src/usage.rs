@@ -127,12 +127,9 @@ impl UsageAccumulator {
             })
             .collect();
         rows.sort_by(|x, y| {
-            y.cost
-                .partial_cmp(&x.cost)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    (&x.app_id, &x.provider, &x.model).cmp(&(&y.app_id, &y.provider, &y.model))
-                })
+            y.cost.total_cmp(&x.cost).then_with(|| {
+                (&x.app_id, &x.provider, &x.model).cmp(&(&y.app_id, &y.provider, &y.model))
+            })
         });
         rows
     }

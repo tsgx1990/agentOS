@@ -653,19 +653,29 @@ mod tests {
         .await;
         assert_eq!(r.kind, ProbeKind::Timeout, "{r:?}");
         assert!(!home.exists());
-        let pid = std::fs::read_to_string(&pidfile)
-            .unwrap()
-            .trim()
-            .to_string();
-        // 轮询到约 2 秒：进程刚被杀时可能短暂是僵尸，kill -0 仍成功。
+        // 慢机器上 pidfile 可能尚未写出：轮询等它出现且非空（最多约 5 秒）。
+        let mut pid = String::new();
+        for _ in 0..50 {
+            pid = std::fs::read_to_string(&pidfile)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if !pid.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!pid.is_empty(), "pidfile 未在 5 秒内写出");
+        // 进程不存在或为僵尸（状态以 Z 开头）都算已被杀；`kill -0` 对僵尸也成功，会误判。
         let mut alive = true;
-        for _ in 0..20 {
-            alive = std::process::Command::new("kill")
-                .args(["-0", &pid])
+        for _ in 0..50 {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
                 .stderr(Stdio::null())
-                .status()
-                .unwrap()
-                .success();
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            alive = !(stat.is_empty() || stat.starts_with('Z'));
             if !alive {
                 break;
             }
