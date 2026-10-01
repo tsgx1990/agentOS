@@ -636,11 +636,14 @@ mod tests {
     #[tokio::test]
     async fn run_probe_timeout_kills_child_and_removes_home() {
         let t = tempfile::tempdir().unwrap();
-        let pidfile = t.path().join("pid");
-        let pi = script(
-            t.path(),
-            &format!("echo $$ > \"{}\"\nexec sleep 30", pidfile.display()),
-        );
+        // 不依赖 pidfile：假 pi 直接 exec 一个带唯一参数的 sleep，事后按命令行找残留。
+        // 机器很忙时脚本可能还没跑到 exec 就被超时杀掉，这种情况同样应通过。
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let secs = format!("7{}{:03}", std::process::id(), nanos % 1000);
+        let pi = script(t.path(), &format!("exec sleep {secs}"));
         let home = t.path().join("h");
         let r = run_probe(
             &pi,
@@ -653,35 +656,25 @@ mod tests {
         .await;
         assert_eq!(r.kind, ProbeKind::Timeout, "{r:?}");
         assert!(!home.exists());
-        // 慢机器上 pidfile 可能尚未写出：轮询等它出现且非空（最多约 5 秒）。
-        let mut pid = String::new();
-        for _ in 0..50 {
-            pid = std::fs::read_to_string(&pidfile)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            if !pid.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(!pid.is_empty(), "pidfile 未在 5 秒内写出");
-        // 进程不存在或为僵尸（状态以 Z 开头）都算已被杀；`kill -0` 对僵尸也成功，会误判。
-        let mut alive = true;
+        // 轮询（约 5 秒）：不应再有该 sleep 进程；僵尸（状态以 Z 开头）视为已被杀。
+        let needle = format!("sleep {secs}");
+        let mut leftover = true;
         for _ in 0..50 {
             let out = std::process::Command::new("ps")
-                .args(["-o", "stat=", "-p", &pid])
-                .stderr(Stdio::null())
+                .args(["-ax", "-o", "stat=,command="])
                 .output()
                 .unwrap();
-            let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            alive = !(stat.is_empty() || stat.starts_with('Z'));
-            if !alive {
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            leftover = text.lines().any(|l| {
+                let l = l.trim_start();
+                !l.starts_with('Z') && l.trim_end().ends_with(&needle)
+            });
+            if !leftover {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(!alive, "超时后子进程应已被杀掉");
+        assert!(!leftover, "超时后子进程应已被杀掉：sleep {secs} 仍在运行");
     }
 
     #[cfg(unix)]
