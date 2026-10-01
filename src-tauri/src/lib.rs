@@ -17,6 +17,7 @@ pub mod paths;
 pub mod permissions;
 pub mod pi_bin;
 pub mod pkg;
+pub mod probe;
 pub mod providers;
 pub mod publish;
 pub mod registry;
@@ -1536,6 +1537,7 @@ pub fn run() {
             model_overrides::get_model_settings,
             model_overrides::set_global_model,
             model_overrides::set_app_model,
+            probe::test_provider,
             send_prompt,
             restart_session,
             open_app,
