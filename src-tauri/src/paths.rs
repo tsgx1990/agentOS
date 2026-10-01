@@ -150,6 +150,18 @@ impl DataLayout {
         self.root.join("skills-index.json")
     }
 
+    /// 自定义 provider 配置: `root/providers.json`（host-global 单文件，只存非密钥配置，
+    /// 密钥在系统钥匙串；同 `skills_index_path()` 的"整份 JSON + 原子写"模式）。
+    pub fn providers_path(&self) -> PathBuf {
+        self.root.join("providers.json")
+    }
+
+    /// 全局默认模型 / 应用级模型覆盖: `root/model-overrides.json`（host-global 单文件，
+    /// 同 `skills_index_path()` 的"整份 JSON + 原子写"模式）。
+    pub fn model_overrides_path(&self) -> PathBuf {
+        self.root.join("model-overrides.json")
+    }
+
     /// 创建应用程序所需的目录结构
     /// 包括: apps/<app_id>, sessions/<app_id>, state 父目录
     pub fn ensure_app(&self, app_id: &str) -> std::io::Result<()> {

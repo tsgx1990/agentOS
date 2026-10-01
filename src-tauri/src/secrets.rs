@@ -1,8 +1,12 @@
 const SERVICE: &str = "super-agent-os";
 
-/// provider → 注入子进程时使用的环境变量名；不在目录里的 provider 返回 None。
+/// provider → 注入子进程时使用的环境变量名；原生查目录，`custom-*` 按 id 推导，其余返回 None。
 pub fn env_var_for(provider: &str) -> Option<String> {
-    crate::providers::native(provider).map(|p| p.env_var.to_string())
+    if let Some(p) = crate::providers::native(provider) {
+        return Some(p.env_var.to_string());
+    }
+    crate::providers::is_valid_custom_id(provider)
+        .then(|| crate::providers::custom_env_var(provider))
 }
 
 fn entry(provider: &str) -> Result<keyring::Entry, String> {
@@ -11,9 +15,15 @@ fn entry(provider: &str) -> Result<keyring::Entry, String> {
 
 /// 把某个 provider 的 API Key 写入系统钥匙串（不落盘文件）。
 #[tauri::command]
-pub fn set_api_key(provider: String, key: String) -> Result<(), String> {
+pub fn set_api_key(app: tauri::AppHandle, provider: String, key: String) -> Result<(), String> {
     if env_var_for(&provider).is_none() {
         return Err(format!("不支持的 provider：{provider}"));
+    }
+    // 自定义 provider 必须先保存配置再设 Key，避免钥匙串里留下无主条目。
+    if crate::providers::native(&provider).is_none()
+        && !crate::providers::custom_exists(&app, &provider)?
+    {
+        return Err(format!("自定义 provider 不存在：{provider}"));
     }
     let key = normalize_key(&key)?;
     entry(&provider)?
@@ -129,5 +139,19 @@ mod tests {
             normalize_key("sk-test\nfake").unwrap_err(),
             "API Key 中不应有空格或换行"
         );
+    }
+
+    #[test]
+    fn env_var_for_custom_id_derives_superagent_key_name() {
+        assert_eq!(
+            env_var_for("custom-x"),
+            Some("SUPERAGENT_KEY_CUSTOM_X".to_string())
+        );
+        assert_eq!(
+            env_var_for("custom-my-llm"),
+            Some("SUPERAGENT_KEY_CUSTOM_MY_LLM".to_string())
+        );
+        assert_eq!(env_var_for("custom-"), None);
+        assert_eq!(env_var_for("custom-X"), None);
     }
 }
