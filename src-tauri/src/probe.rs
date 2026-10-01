@@ -58,6 +58,26 @@ pub struct ProbeReport {
 
 const DETAIL_MAX_CHARS: usize = 300;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+const STALE_PROBE_AGE: Duration = Duration::from_secs(3600);
+static PROBE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 清理 `dir` 下修改时间早于 `older_than` 的子目录（进程被强杀后的残留）；任何失败都忽略。
+fn cleanup_stale_probes(dir: &Path, older_than: Duration) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let stale = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > older_than);
+        if stale && e.path().is_dir() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
 
 pub fn probe_argv(provider: &str, model: &str) -> Vec<String> {
     [
@@ -81,7 +101,8 @@ pub fn probe_argv(provider: &str, model: &str) -> Vec<String> {
 }
 
 /// 逐行解析 stdout 的 JSON 事件，取最后一个 `type=="message_end"` 且 `message.role=="assistant"`
-/// 的事件：`stopReason=="error"` → `Err(errorMessage 或 "未知错误")`；否则 `Ok(())`；
+/// 的事件：`stopReason` 为 `stop`/`length`/`toolUse` → `Ok(())`；`error` → `Err(errorMessage 或 "未知错误")`；
+/// 其余（含 `aborted`、缺失）→ `Err(可读说明)`；
 /// 一个都没有 → `Err("未收到模型回复")`。非 JSON 行忽略。
 pub fn parse_probe_output(stdout: &str) -> Result<(), String> {
     let last = stdout
@@ -92,14 +113,18 @@ pub fn parse_probe_output(stdout: &str) -> Result<(), String> {
         return Err("未收到模型回复".to_string());
     };
     let msg = &ev["message"];
-    if msg["stopReason"] == "error" {
-        return Err(msg["errorMessage"]
+    // 白名单：只有正常结束的几种算成功，其余（含 aborted、缺失）都算失败。
+    match msg["stopReason"].as_str() {
+        Some("stop" | "length" | "toolUse") => Ok(()),
+        Some("error") => Err(msg["errorMessage"]
             .as_str()
             .filter(|s| !s.is_empty())
             .unwrap_or("未知错误")
-            .to_string());
+            .to_string()),
+        Some("aborted") => Err("请求被中断（aborted）".to_string()),
+        Some(other) => Err(format!("模型未正常结束（stopReason={other}）")),
+        None => Err("模型未正常结束（缺少 stopReason）".to_string()),
     }
-    Ok(())
 }
 
 /// `m` 里是否有独立的三位状态码 `code`（前后不是数字），避免把端口号、id 里的数字误认为状态码。
@@ -167,9 +192,16 @@ pub fn message_for(kind: ProbeKind, is_custom: bool) -> String {
     .to_string()
 }
 
-/// 脱敏后截断到 `DETAIL_MAX_CHARS` 个字符。
-fn make_detail(raw: &str) -> String {
-    crate::audit::redact(raw)
+/// 先把本次注入的环境变量值（长度 ≥ 8）整串替换为 `***`（纵深防御：上游错误体可能原样回显
+/// 低熵密钥，`audit::redact` 认不出），再脱敏、截断到 `DETAIL_MAX_CHARS` 个字符。
+fn make_detail(raw: &str, secrets: &[(String, String)]) -> String {
+    let mut s = raw.to_string();
+    for (_, v) in secrets {
+        if v.len() >= 8 {
+            s = s.replace(v.as_str(), "***");
+        }
+    }
+    crate::audit::redact(&s)
         .chars()
         .take(DETAIL_MAX_CHARS)
         .collect()
@@ -198,6 +230,7 @@ fn report(
     model: &str,
     is_custom: bool,
     detail: &str,
+    secrets: &[(String, String)],
 ) -> ProbeReport {
     ProbeReport {
         ok: kind == ProbeKind::Ok,
@@ -206,7 +239,7 @@ fn report(
         provider: provider.to_string(),
         model: model.to_string(),
         message: message_for(kind, is_custom),
-        detail: make_detail(detail),
+        detail: make_detail(detail, secrets),
     }
 }
 
@@ -227,7 +260,17 @@ pub async fn run_probe(
 ) -> ProbeReport {
     let started = Instant::now();
     let is_custom = providers::native(provider).is_none();
-    let fail = |kind, detail: &str| report(kind, started, provider, model, is_custom, detail);
+    let fail = |kind, detail: &str| {
+        report(
+            kind,
+            started,
+            provider,
+            model,
+            is_custom,
+            detail,
+            &launch.env,
+        )
+    };
 
     let _home = match TempHome::create(agent_home) {
         Ok(h) => h,
@@ -298,6 +341,7 @@ pub async fn test_provider(
     model: Option<String>,
 ) -> Result<ProbeReport, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    cleanup_stale_probes(&root.join("probe"), STALE_PROBE_AGE);
     let layout = DataLayout::new(root.clone());
     let custom = ProvidersStore::new(layout.providers_path()).list()?;
     if !providers::is_known(&provider, &custom) {
@@ -323,6 +367,7 @@ pub async fn test_provider(
             &model,
             is_custom,
             "",
+            &[],
         ));
     }
     let eff = EffectiveModel {
@@ -335,9 +380,11 @@ pub async fn test_provider(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
+    // 进程内计数后缀：同一毫秒的并发探测也不会撞名。
+    let seq = PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let home = root
         .join("probe")
-        .join(format!("{stamp}-{}", std::process::id()));
+        .join(format!("{stamp}-{}-{seq}", std::process::id()));
     Ok(run_probe(
         &crate::pi_bin::resolve_pi_bin(),
         &home,
@@ -447,6 +494,81 @@ mod tests {
     }
 
     #[test]
+    fn parse_probe_output_stop_reason_whitelist() {
+        let line = |r: &str| {
+            format!(
+                r#"{{"type":"message_end","message":{{"role":"assistant","stopReason":"{r}"}}}}"#
+            )
+        };
+        for ok in ["stop", "length", "toolUse"] {
+            assert_eq!(parse_probe_output(&line(ok)), Ok(()), "{ok}");
+        }
+        let e = parse_probe_output(&line("aborted")).unwrap_err();
+        assert!(e.contains("中断"), "{e}");
+        assert!(parse_probe_output(&line("weird"))
+            .unwrap_err()
+            .contains("weird"));
+        let none = r#"{"type":"message_end","message":{"role":"assistant"}}"#;
+        assert!(parse_probe_output(none).is_err());
+    }
+
+    #[test]
+    fn detail_masks_injected_env_values_even_if_low_entropy() {
+        let env = vec![
+            (
+                "SUPERAGENT_KEY_CUSTOM_X".to_string(),
+                "hunter2-hunter2".to_string(),
+            ),
+            ("SHORT".to_string(), "abc".to_string()),
+        ];
+        let d = make_detail("401 bad key hunter2-hunter2 and abc", &env);
+        assert!(!d.contains("hunter2"), "{d}");
+        assert!(d.contains("abc"), "短值不替换：{d}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_probe_masks_env_value_echoed_on_stderr() {
+        let t = tempfile::tempdir().unwrap();
+        let pi = script(
+            t.path(),
+            "echo \"ECONNREFUSED token=$SUPERAGENT_KEY_CUSTOM_X\" >&2\nexit 1",
+        );
+        let launch = ModelLaunch {
+            env: vec![("SUPERAGENT_KEY_CUSTOM_X".into(), "plainsecret99".into())],
+            ..Default::default()
+        };
+        let r = run_probe(
+            &pi,
+            &t.path().join("h"),
+            "custom-x",
+            "m",
+            &launch,
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(!r.detail.contains("plainsecret99"), "{}", r.detail);
+    }
+
+    #[test]
+    fn cleanup_stale_probes_respects_age_threshold() {
+        let t = tempfile::tempdir().unwrap();
+        let old = t.path().join("old");
+        let fresh = t.path().join("fresh");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::fs::write(old.join("models.json"), "{}").unwrap();
+        // 阈值为 0：现有目录都算过期；阈值很大：都保留。
+        cleanup_stale_probes(t.path(), Duration::from_secs(3600));
+        assert!(old.exists() && fresh.exists());
+        std::thread::sleep(Duration::from_millis(50));
+        cleanup_stale_probes(t.path(), Duration::from_millis(10));
+        assert!(!old.exists() && !fresh.exists());
+        // 目录不存在也不报错。
+        cleanup_stale_probes(&t.path().join("nope"), Duration::ZERO);
+    }
+
+    #[test]
     fn message_for_not_found_on_custom_mentions_base_url() {
         assert!(message_for(ProbeKind::NotFound, true).contains("base_url"));
         assert!(!message_for(ProbeKind::NotFound, false).contains("base_url"));
@@ -454,10 +576,10 @@ mod tests {
 
     #[test]
     fn detail_is_redacted_and_truncated() {
-        let d = make_detail("failed api_key=sk-abcdEFGH12345678wxyz");
+        let d = make_detail("failed api_key=sk-test-fake-not-a-real-key", &[]);
         assert!(d.contains("***"), "{d}");
-        assert!(!d.contains("abcdEFGH12345678wxyz"), "{d}");
-        let long = make_detail(&"x ".repeat(500));
+        assert!(!d.contains("sk-test-fake-not-a-real-key"), "{d}");
+        let long = make_detail(&"x ".repeat(500), &[]);
         assert!(long.chars().count() <= 300);
     }
 
@@ -535,13 +657,20 @@ mod tests {
             .unwrap()
             .trim()
             .to_string();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let alive = std::process::Command::new("kill")
-            .args(["-0", &pid])
-            .stderr(Stdio::null())
-            .status()
-            .unwrap()
-            .success();
+        // 轮询到约 2 秒：进程刚被杀时可能短暂是僵尸，kill -0 仍成功。
+        let mut alive = true;
+        for _ in 0..20 {
+            alive = std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         assert!(!alive, "超时后子进程应已被杀掉");
     }
 
@@ -551,7 +680,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let pi = script(
             t.path(),
-            "echo 'ECONNREFUSED while using api_key=sk-abcdEFGH12345678wxyz' >&2\nexit 1",
+            "echo 'ECONNREFUSED while using api_key=sk-test-fake-not-a-real-key' >&2\nexit 1",
         );
         let home = t.path().join("h");
         let r = run_probe(
@@ -564,7 +693,11 @@ mod tests {
         )
         .await;
         assert_eq!(r.kind, ProbeKind::Network, "{r:?}");
-        assert!(!r.detail.contains("abcdEFGH12345678wxyz"), "{}", r.detail);
+        assert!(
+            !r.detail.contains("sk-test-fake-not-a-real-key"),
+            "{}",
+            r.detail
+        );
         assert!(!home.exists());
     }
 
