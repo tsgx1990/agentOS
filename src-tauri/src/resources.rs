@@ -403,4 +403,86 @@ mod tests {
         assert!(!s.sample().1);
         assert!(s.sample().1);
     }
+
+    fn roots(app_id: &str, fg: Option<u32>, bg: Vec<u32>) -> AppRoots {
+        AppRoots {
+            app_id: app_id.into(),
+            fg_pid: fg,
+            bg_pids: bg,
+            activity: None,
+        }
+    }
+
+    #[test]
+    fn main_subtree_claims_app_root_first() {
+        // 1 宿主；10 主助手；11 在主助手之下，同时又是应用 a 的根。
+        let t = vec![ps(1, None, 100), ps(10, Some(1), 10), ps(11, Some(10), 20)];
+        let r = aggregate(
+            &t,
+            true,
+            1,
+            Some(10),
+            &[roots("a", Some(11), vec![])],
+            &[],
+            0,
+        );
+        assert_eq!(r.main.as_ref().unwrap().rss_bytes, 30);
+        assert_eq!(r.apps[0].usage.proc_count, 0);
+        assert_eq!(r.apps[0].usage.rss_bytes, 0);
+    }
+
+    #[test]
+    fn app_claims_before_mcp() {
+        let t = vec![ps(1, None, 100), ps(10, Some(1), 10), ps(11, Some(10), 20)];
+        let r = aggregate(
+            &t,
+            true,
+            1,
+            None,
+            &[roots("a", Some(10), vec![])],
+            &[("srv".into(), 11)],
+            0,
+        );
+        assert_eq!(r.apps[0].usage.rss_bytes, 30);
+        assert_eq!(r.mcp_servers[0].proc_count, 0);
+    }
+
+    #[test]
+    fn apps_claimed_by_id_order_and_output_sorted_by_rss_desc() {
+        // 11 同时在 a、b 两棵子树之下（a 先认领）；传入顺序与 app_id 顺序相反。
+        let t = vec![
+            ps(1, None, 100),
+            ps(10, Some(1), 5),
+            ps(20, Some(1), 50),
+            ps(11, Some(10), 7),
+        ];
+        let b = roots("b", Some(11), vec![]);
+        let a = roots("a", Some(10), vec![]);
+        let r = aggregate(&t, true, 1, None, &[b, a], &[], 0);
+        // a 认领 10 与 11 => 12；b 为 0 => 输出 a 在前（rss 降序）。
+        assert_eq!(r.apps[0].app_id, "a");
+        assert_eq!(r.apps[0].usage.rss_bytes, 12);
+        assert_eq!(r.apps[1].app_id, "b");
+        assert_eq!(r.apps[1].usage.rss_bytes, 0);
+        // 输出按 rss 降序：让 b 更大再验证一次。
+        let c = roots("c", Some(20), vec![]);
+        let r = aggregate(
+            &t,
+            true,
+            1,
+            None,
+            &[roots("a", Some(10), vec![]), c],
+            &[],
+            0,
+        );
+        assert_eq!(r.apps[0].app_id, "c");
+    }
+
+    #[test]
+    fn fg_pid_also_in_bg_counts_once() {
+        let t = vec![ps(1, None, 100), ps(10, Some(1), 10)];
+        let r = aggregate(&t, true, 1, None, &[roots("a", Some(10), vec![10])], &[], 0);
+        assert_eq!(r.apps[0].usage.proc_count, 1);
+        assert_eq!(r.apps[0].usage.rss_bytes, 10);
+    }
 }

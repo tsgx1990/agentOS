@@ -285,13 +285,15 @@ pub fn has_pending_approval(layout: &DataLayout, app_id: &str) -> bool {
         .unwrap_or(true)
 }
 
+/// 出现过后台会话的应用 id（不论是否拿到 pid）——回收计划与资源面板共用这一口径。
+pub fn background_app_ids(sessions: &[crate::session_mgr::HeadlessSession]) -> HashSet<String> {
+    sessions.iter().map(|h| h.app_id.clone()).collect()
+}
+
 /// 只读：列出该回收的应用。
 pub async fn plan_idle_recycle(state: &AppState, layout: &DataLayout, now: i64) -> Vec<Candidate> {
     let policy = IdlePolicyStore::new(layout).load();
-    let background: HashSet<String> = crate::session_mgr::running_headless_sessions()
-        .into_iter()
-        .map(|h| h.app_id)
-        .collect();
+    let background = background_app_ids(&crate::session_mgr::running_headless_sessions());
     // 现取各应用根 pid（崩溃重启后会变）；guard 在本语句内释放。
     let pids: HashMap<String, Option<u32>> = {
         let g = state.app_sessions.lock().await;
@@ -479,6 +481,52 @@ mod tests {
             v("x", &a, &pol, 1000, false, true),
             Verdict::Keep(Some(Exempt::BackgroundSession))
         );
+    }
+
+    #[test]
+    fn verdict_order_combinations() {
+        let pol = IdlePolicy::default();
+        let turn = AppActivity {
+            in_turn: true,
+            ..base_act()
+        };
+        assert_eq!(
+            idle_verdict(crate::maker::MAKER_APP_ID, &turn, &pol, 1000, false, false),
+            Verdict::Keep(Some(Exempt::Maker))
+        );
+        let both = IdlePolicy {
+            enabled: false,
+            exempt_apps: ["x".to_string()].into_iter().collect(),
+            ..IdlePolicy::default()
+        };
+        assert_eq!(
+            idle_verdict("x", &base_act(), &both, 1000, false, false),
+            Verdict::Keep(Some(Exempt::PolicyOff))
+        );
+        assert_eq!(
+            idle_verdict("x", &turn, &pol, 1000, true, false),
+            Verdict::Keep(Some(Exempt::InTurn))
+        );
+        assert_eq!(
+            idle_verdict("x", &base_act(), &pol, 1000, true, true),
+            Verdict::Keep(Some(Exempt::PendingApproval))
+        );
+    }
+
+    #[test]
+    fn background_ids_include_sessions_without_pid() {
+        use crate::session_mgr::HeadlessSession;
+        let ids = background_app_ids(&[
+            HeadlessSession {
+                app_id: "a".into(),
+                pid: None,
+            },
+            HeadlessSession {
+                app_id: "b".into(),
+                pid: Some(7),
+            },
+        ]);
+        assert!(ids.contains("a") && ids.contains("b") && ids.len() == 2);
     }
 
     #[test]

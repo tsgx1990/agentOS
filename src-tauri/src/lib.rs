@@ -528,8 +528,11 @@ async fn resource_report(app: tauri::AppHandle) -> Result<resources::ResourceRep
         let g = state.app_sessions.lock().await;
         g.iter().map(|(id, s)| (id.clone(), s.child_id())).collect()
     };
+    let headless = session_mgr::running_headless_sessions();
+    // 与回收计划同口径：pid 未知的后台会话也算「后台运行中」。
+    let bg_apps = idle::background_app_ids(&headless);
     let mut bg: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
-    for h in session_mgr::running_headless_sessions() {
+    for h in headless {
         let e = bg.entry(h.app_id).or_default();
         if let Some(pid) = h.pid {
             e.push(pid);
@@ -567,7 +570,7 @@ async fn resource_report(app: tauri::AppHandle) -> Result<resources::ResourceRep
         for r in &roots {
             let Some(act) = &r.activity else { continue };
             let pending = idle::has_pending_approval(&layout, &r.app_id);
-            let has_bg = !r.bg_pids.is_empty();
+            let has_bg = bg_apps.contains(&r.app_id);
             if let idle::Verdict::Keep(Some(e)) =
                 idle::idle_verdict(&r.app_id, act, &policy, now, pending, has_bg)
             {
