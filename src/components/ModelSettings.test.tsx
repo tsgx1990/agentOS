@@ -13,6 +13,7 @@ const PROVIDERS = [
   nat("openai", "OpenAI", "intl", false, ["gpt-5.5"]),
   nat("deepseek", "DeepSeek 深度求索", "cn", true, ["deepseek-v4-flash", "deepseek-v4-pro"]),
   nat("moonshotai-cn", "月之暗面开放平台（Moonshot）", "cn", false, ["kimi-k3"]),
+  { id: "custom-empty", display: "我的自建服务", native: false, region: null, configured: true, base_url: "https://llm.example.com/v1", api: "openai-completions", presets: [] },
 ];
 const SETTINGS = {
   global: { provider: "anthropic", model: "claude-sonnet-5" },
@@ -201,4 +202,29 @@ test("用量按 provider 分组，并有「其他（工具 / 压缩）」行 = �
   expect(within(other).getByText("400")).toBeTruthy();
   expect(within(other).getByText("60")).toBeTruthy();
   expect(within(other).getByText("$0.1500")).toBeTruthy();
+});
+
+test("默认模型：选没有预设的自定义服务时出现手填输入，手填后才写入", async () => {
+  await mount();
+  fireEvent.change(screen.getByLabelText("默认模型服务"), { target: { value: "custom-empty" } });
+  const input = await screen.findByLabelText("手填模型 id");
+  expect(invokeMock).not.toHaveBeenCalledWith("set_global_model", expect.anything());
+  fireEvent.change(input, { target: { value: "my-model" } });
+  fireEvent.click(screen.getByRole("button", { name: "应用" }));
+  await waitFor(() =>
+    expect(invokeMock).toHaveBeenCalledWith("set_global_model", {
+      choice: { provider: "custom-empty", model: "my-model" },
+    }),
+  );
+});
+
+test("保存新密钥后清掉该 provider 上一次的测试结果", async () => {
+  installMock(PROBE_BAD);
+  await mount();
+  pick("DeepSeek 深度求索");
+  fireEvent.click(screen.getByRole("button", { name: "测试连通性" }));
+  await screen.findByText("密钥无效或已被撤销");
+  fireEvent.change(screen.getByLabelText("API 密钥"), { target: { value: "sk-test-fake" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
+  await waitFor(() => expect(screen.queryByText("密钥无效或已被撤销")).toBeNull());
 });

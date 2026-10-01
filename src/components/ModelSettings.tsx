@@ -45,15 +45,16 @@ export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
     setUsageRows(rows);
     // 「其他（工具 / 压缩）」= 应用总量 − 各模型之和（总量来自 app_usage）。
     const ids = [...new Set([...rows.map((r) => r.app_id), ...appIds, "main"])];
+    const totals = await Promise.all(ids.map((id) => appUsage(id)));
     const others: OtherUsageRow[] = [];
-    for (const id of ids) {
-      const total = await appUsage(id);
+    ids.forEach((id, i) => {
+      const total = totals[i];
       const mine = rows.filter((r) => r.app_id === id);
       const input = Math.max(0, total.input - mine.reduce((s, r) => s + r.input, 0));
       const output = Math.max(0, total.output - mine.reduce((s, r) => s + r.output, 0));
       const cost = Math.max(0, total.cost - mine.reduce((s, r) => s + r.cost, 0));
       if (input > 0 || output > 0 || cost > 1e-9) others.push({ app_id: id, input, output, cost });
-    }
+    });
     setOtherUsage(others);
   }, []);
 
@@ -85,6 +86,7 @@ export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
   const onSaveKey = (id: string, key: string) =>
     run(async () => {
       await setApiKey(id, key);
+      setProbes(({ [id]: _drop, ...rest }) => rest); // 换了密钥，上次的测试结果作废
       await Promise.all([refreshProviders(), refreshSettings()]);
     });
 

@@ -53,6 +53,8 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const [keyErr, setKeyErr] = useState("");
   const [saving, setSaving] = useState(false);
   const [probe, setProbe] = useState<ProbeReport | null>(null);
+  // 测试通过、密钥已存，但设全局默认失败：给提示并允许继续（同 continueAnyway）。
+  const [defaultErr, setDefaultErr] = useState("");
 
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [installedId, setInstalledId] = useState<string | null>(null);
@@ -79,6 +81,7 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   async function saveKey() {
     if (!selected) return;
     setKeyErr("");
+    setDefaultErr("");
     setProbe(null);
     setSaving(true);
     try {
@@ -103,7 +106,8 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
         setKey("");
         setStep("app");
       } catch (e) {
-        setKeyErr(String(e));
+        setKey("");
+        setDefaultErr(String(e));
       }
     } else {
       setProbe(report);
@@ -116,6 +120,7 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
     if (selected) await ensureDefault(selected).catch(() => {});
     setKey("");
     setProbe(null);
+    setDefaultErr("");
     setStep("app");
   }
 
@@ -170,11 +175,18 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
             <input
               type="password"
               autoComplete="off"
+              aria-label="API 密钥"
               placeholder={`粘贴 ${selected.display} 的 API Key`}
               value={key}
               onChange={(e) => setKey(e.target.value)}
             />
             {keyErr && <p className="onboarding-error" role="alert">{keyErr}</p>}
+            {defaultErr && (
+              <>
+                <p className="onboarding-error" role="alert">{defaultErr}</p>
+                <p className="onboarding-note">密钥已保存、连通性测试通过，但没能设置默认模型。可以先继续，稍后在「模型与密钥」里设置。</p>
+              </>
+            )}
             {probe && (
               <>
                 <ProbeResult probe={probe} />
@@ -182,9 +194,9 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               </>
             )}
             <div className="onboarding-actions">
-              {probe ? (
+              {probe || defaultErr ? (
                 <>
-                  <button onClick={() => { setProbe(null); setKey(""); }}>重新填写</button>
+                  {probe && <button onClick={() => { setProbe(null); setKey(""); }}>重新填写</button>}
                   <button className="primary" onClick={continueAnyway}>仍然继续</button>
                 </>
               ) : (

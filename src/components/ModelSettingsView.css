@@ -490,3 +490,14 @@
   color: var(--text-secondary);
   border-bottom: 1px solid var(--color-panel-divider);
 }
+
+/* 「实际使用」：provider 与模型之间不留字面空格，全角括号自带的留白用 text-spacing-trim 收掉。 */
+.ms-eff {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+/* 全角右括号自带约半个字宽的留白，紧贴斜杠时收回来。 */
+.ms-eff-sep-tight {
+  margin-left: -0.45em;
+}

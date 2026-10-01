@@ -127,12 +127,15 @@ function GlobalModelPicker(props: {
 }) {
   const [manualOn, setManualOn] = useState(false);
   const [text, setText] = useState("");
+  // 已选的 provider 不一定已有对应的全局默认（没有预设可选时要等用户手填），所以单独记一份。
+  const [picked, setPicked] = useState<string | null>(null);
   const usable = props.entries.filter((e) => e.configured);
-  const providerId = props.value?.provider ?? "";
+  const providerId = picked ?? props.value?.provider ?? "";
   const entry = props.entries.find((e) => e.id === providerId) ?? null;
   const presets = entry?.models ?? [];
-  const manual = manualOn || (!!props.value && !presets.includes(props.value.model));
-  const typed = manualOn ? text : (props.value?.model ?? "");
+  const current = props.value?.provider === providerId ? props.value.model : "";
+  const manual = manualOn || (current !== "" && !presets.includes(current));
+  const typed = manualOn ? text : current;
 
   return (
     <div className="ms-row ms-wrap ms-picker">
@@ -142,6 +145,7 @@ function GlobalModelPicker(props: {
         onChange={(e) => {
           const next = props.entries.find((x) => x.id === e.target.value) ?? null;
           setText("");
+          setPicked(e.target.value);
           if (!next) {
             setManualOn(false);
             props.onChange(null);
@@ -164,10 +168,10 @@ function GlobalModelPicker(props: {
       <select
         aria-label="默认模型名称"
         disabled={!entry}
-        value={manual ? MANUAL : (props.value?.model ?? "")}
+        value={manual ? MANUAL : current}
         onChange={(e) => {
           if (e.target.value === MANUAL) {
-            setText(props.value?.model ?? "");
+            setText(current);
             setManualOn(true);
           } else {
             setManualOn(false);
@@ -459,7 +463,11 @@ export function ModelSettingsView(p: ModelSettingsViewProps) {
                         <span className="ms-muted">未设置</span>
                       ) : (
                         <>
-                          <span>{nameOf(a.effective.provider)}</span> / <code>{a.effective.model}</code>{" "}
+                          <span className="ms-eff">
+                            <span className="ms-eff-provider">{nameOf(a.effective.provider)}</span>
+                            <span className={`ms-eff-sep${nameOf(a.effective.provider).endsWith("）") ? " ms-eff-sep-tight" : ""}`}>/</span>
+                            <code>{a.effective.model}</code>
+                          </span>{" "}
                           <span className={`ms-src ms-src-${a.effective.source}`}>{SOURCE_LABEL[a.effective.source]}</span>
                         </>
                       )}

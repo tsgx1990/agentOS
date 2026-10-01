@@ -34,7 +34,7 @@ async function toKeyStep(providerName: RegExp) {
   fireEvent.click(screen.getByText("开始设置"));
   fireEvent.click(await screen.findByRole("button", { name: providerName }));
   fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-  return screen.findByPlaceholderText(/API Key/);
+  return screen.findByLabelText("API 密钥");
 }
 async function saveWith(providerName: RegExp, key: string) {
   const input = await toKeyStep(providerName);
@@ -113,6 +113,16 @@ test("测试失败且 kind 为 rate_limited → 提示偶发限流可稍后重�
   render(<OnboardingWizard onComplete={() => {}} />);
   await saveWith(/DeepSeek/, "sk-test-key");
   await screen.findByText("偶发限流可稍后重试");
+});
+
+test("测试通过但设全局默认失败 → 显示提示，仍可「仍然继续」进入下一步", async () => {
+  setup({ get_model_settings: () => Promise.reject("写入默认模型失败：模拟错误") });
+  render(<OnboardingWizard onComplete={() => {}} />);
+  await saveWith(/DeepSeek/, "sk-test-key");
+  await screen.findByText(/写入默认模型失败/);
+  expect(screen.queryByText(/起步应用/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "仍然继续" }));
+  await waitFor(() => expect(screen.getByText(/起步应用/)).toBeTruthy());
 });
 
 test("key 保存失败（BYOK 错误）→ 展示错误文案，停留在当前步骤", async () => {
