@@ -15,6 +15,11 @@ impl DataLayout {
         Self { root }
     }
 
+    /// 数据根目录（宿主控制，应用不可写）。
+    pub fn root_dir(&self) -> PathBuf {
+        self.root.clone()
+    }
+
     pub fn session_dir(&self, app_id: &str) -> PathBuf {
         self.root.join("sessions").join(app_id)
     }

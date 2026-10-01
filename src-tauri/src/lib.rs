@@ -6,6 +6,7 @@ pub mod call_bus;
 pub mod capabilities;
 pub mod capability;
 pub mod dirfd;
+pub mod disk;
 pub mod idle;
 pub mod install;
 pub mod jsonl;
@@ -512,6 +513,58 @@ fn app_sandbox_status(app_id: String, app: tauri::AppHandle) -> Result<SandboxSt
 async fn app_usage(app_id: String, app: tauri::AppHandle) -> Result<usage::UsageResponse, String> {
     let state = app.state::<AppState>();
     Ok(state.usage.usage_response(&app_id).await)
+}
+
+/// P6-F：各数据目录的占用报告（遍历不跟随符号链接，放 `spawn_blocking`）。
+#[tauri::command]
+async fn disk_report(app: tauri::AppHandle) -> Result<disk::DiskReport, String> {
+    let layout = DataLayout::new(app.path().app_data_dir().map_err(|e| e.to_string())?);
+    tauri::async_runtime::spawn_blocking(move || {
+        let ids: Vec<String> = registry::RegistryStore::new(layout.registry_path())
+            .load()
+            .into_iter()
+            .map(|a| a.app_id)
+            .collect();
+        disk::disk_report(&layout, &ids)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// P6-F：清缓存（旧 pi 会话文件 + 无主的 Maker 草稿）。`app_id` 为空＝全部。
+/// 打开中的应用、主助手、有后台会话的应用保留各自最新的会话文件。
+#[tauri::command]
+async fn clear_caches(
+    app: tauri::AppHandle,
+    app_id: Option<String>,
+) -> Result<disk::ClearReport, String> {
+    let state = app.state::<AppState>();
+    let mut running: std::collections::HashSet<String> =
+        state.app_sessions.lock().await.keys().cloned().collect();
+    running.insert("main".to_string());
+    running.extend(
+        session_mgr::running_headless_sessions()
+            .into_iter()
+            .map(|h| h.app_id),
+    );
+    let pending: Vec<std::path::PathBuf> = state
+        .mcp
+        .pending_install_dirs()
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
+    let layout = DataLayout::new(app.path().app_data_dir().map_err(|e| e.to_string())?);
+    tauri::async_runtime::spawn_blocking(move || {
+        disk::clear_caches(
+            &layout,
+            app_id.as_deref(),
+            &running,
+            &pending,
+            std::time::SystemTime::now(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// P6-F：资源面板的一次采样。不缓存、不起后台循环——只有面板打开轮询时才会被调用，
@@ -1799,6 +1852,8 @@ pub fn run() {
             list_pending_skill_installs,
             skill_respond_install_confirm,
             resource_report,
+            disk_report,
+            clear_caches,
             get_idle_policy,
             set_idle_policy,
             list_dormant_apps,

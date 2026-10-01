@@ -15,6 +15,24 @@ pub struct DirIdentity {
     pub ino: u64,
 }
 
+/// 目录项的类别（不跟随链接：符号链接就是 `Symlink`，不会被当成它指向的东西）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    File,
+    Dir,
+    Symlink,
+    Other,
+}
+
+/// 目录项的元数据（对链接取的是链接自己的，不是目标的）。
+#[derive(Debug, Clone)]
+pub struct EntryInfo {
+    pub name: String,
+    pub kind: EntryKind,
+    pub size: u64,
+    pub mtime: std::time::SystemTime,
+}
+
 /// 不跟随链接地读出路径本身的身份；不是真目录（链接、文件）一律报错。
 #[cfg(unix)]
 pub fn identity_of_real_dir(path: &Path) -> Result<DirIdentity, String> {
@@ -153,6 +171,75 @@ mod unix_impl {
             result.map_err(|e| e.to_string())
         }
 
+        /// 在句柄目录里打开**已存在**的子目录（`O_DIRECTORY | O_NOFOLLOW`，不创建）。
+        /// 子目录是符号链接或不是目录 → Err，绝不跟随。
+        pub fn open_subdir(&self, name: &str) -> Result<DirHandle, String> {
+            check_name(name)?;
+            let fd = rustix::fs::openat(
+                &self.fd,
+                name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| format!("子目录 {name} 不是真实目录（可能是符号链接）：{e}"))?;
+            Ok(DirHandle { fd })
+        }
+
+        /// 列出句柄目录下的全部目录项（不含 `.`、`..`），元数据一律 `AT_SYMLINK_NOFOLLOW`。
+        /// 单项读不到（被并发删走等）就跳过。
+        pub fn entries(&self) -> Result<Vec<EntryInfo>, String> {
+            let mut dir = rustix::fs::Dir::read_from(&self.fd).map_err(|e| e.to_string())?;
+            dir.rewind();
+            let mut names = Vec::new();
+            for ent in dir.by_ref() {
+                let Ok(ent) = ent else { continue };
+                let n = ent.file_name().to_bytes();
+                if n == b"." || n == b".." {
+                    continue;
+                }
+                if let Ok(name) = std::str::from_utf8(n) {
+                    names.push(name.to_string());
+                }
+            }
+            let mut out = Vec::new();
+            for name in names {
+                let Ok(st) = rustix::fs::statat(&self.fd, name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+                else {
+                    continue;
+                };
+                let kind = match rustix::fs::FileType::from_raw_mode(st.st_mode) {
+                    rustix::fs::FileType::RegularFile => EntryKind::File,
+                    rustix::fs::FileType::Directory => EntryKind::Dir,
+                    rustix::fs::FileType::Symlink => EntryKind::Symlink,
+                    _ => EntryKind::Other,
+                };
+                let secs: i64 = st.st_mtime;
+                let mtime = if secs >= 0 {
+                    std::time::UNIX_EPOCH
+                        + std::time::Duration::new(
+                            secs as u64,
+                            (st.st_mtime_nsec as u32) % 1_000_000_000,
+                        )
+                } else {
+                    std::time::UNIX_EPOCH
+                };
+                out.push(EntryInfo {
+                    name,
+                    kind,
+                    size: st.st_size as u64,
+                    mtime,
+                });
+            }
+            Ok(out)
+        }
+
+        /// 删除句柄目录里的一个空子目录（`unlinkat(AT_REMOVEDIR)`）；非空 / 不是目录 → Err。
+        pub fn remove_empty_dir(&self, name: &str) -> Result<(), String> {
+            check_name(name)?;
+            rustix::fs::unlinkat(&self.fd, name, AtFlags::REMOVEDIR)
+                .map_err(|e| io_err(e).to_string())
+        }
+
         /// 删除句柄目录里的 `name`（对符号链接只删链接本身）；不存在视为成功。
         pub fn remove_file_if_exists(&self, name: &str) -> Result<(), String> {
             check_name(name)?;
@@ -203,6 +290,42 @@ impl DirHandle {
         let tmp = self.path.join(format!(".{name}.tmp"));
         std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, self.path.join(name)).map_err(|e| e.to_string())
+    }
+    pub fn open_subdir(&self, name: &str) -> Result<DirHandle, String> {
+        let p = self.path.join(name);
+        identity_of_real_dir(&p)?;
+        Ok(DirHandle { path: p })
+    }
+    pub fn entries(&self) -> Result<Vec<EntryInfo>, String> {
+        let mut out = Vec::new();
+        for ent in std::fs::read_dir(&self.path)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
+            let Ok(m) = std::fs::symlink_metadata(ent.path()) else {
+                continue;
+            };
+            let ft = m.file_type();
+            let kind = if ft.is_symlink() {
+                EntryKind::Symlink
+            } else if ft.is_dir() {
+                EntryKind::Dir
+            } else if ft.is_file() {
+                EntryKind::File
+            } else {
+                EntryKind::Other
+            };
+            out.push(EntryInfo {
+                name: ent.file_name().to_string_lossy().into_owned(),
+                kind,
+                size: m.len(),
+                mtime: m.modified().unwrap_or(std::time::UNIX_EPOCH),
+            });
+        }
+        Ok(out)
+    }
+    pub fn remove_empty_dir(&self, name: &str) -> Result<(), String> {
+        std::fs::remove_dir(self.path.join(name)).map_err(|e| e.to_string())
     }
     pub fn remove_file_if_exists(&self, name: &str) -> Result<(), String> {
         match std::fs::remove_file(self.path.join(name)) {
