@@ -310,84 +310,53 @@ fn relaunch_plan_with(
     )
 }
 
-/// 在 `dir` 里以「新建临时文件 → 写入 → fsync → rename 覆盖」的方式写 `name`。
-/// 临时文件用 `create_new`（O_CREAT|O_EXCL）创建：路径上已有任何东西（含符号链接）都会失败，
-/// 不会跟随链接写到别处；`rename` 替换的是目录项本身，目标处若是应用放的符号链接，
-/// 链接被替换掉而不是被跟随（C2：宿主不能被应用诱导去覆盖任意文件）。
-fn write_file_replacing(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = dir.join(format!(
-        ".{name}.{nanos}.{}.{}.tmp",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let result = (|| -> std::io::Result<()> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        drop(f);
-        std::fs::rename(&tmp, dir.join(name))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result.map_err(|e| e.to_string())
-}
-
 /// 写 settings.json；`models_json` 为 Some 则写 models.json，None 则删除旧的 models.json
 /// （NotFound 忽略）——防止撤销自定义 provider 后旧文件残留。models.json 里只有
 /// `${环境变量名}` 引用，没有密钥字面值。
 ///
 /// agent home 是应用可写的目录（应用能在里面放符号链接、甚至把整个目录换成链接），而本函数
-/// 由宿主在沙盒外执行：目录先经 `DataLayout::private_dir` 校验，文件一律经
-/// `write_file_replacing` 写入，绝不跟随链接（C2）。
+/// 由宿主在沙盒外执行：目录先经 `DataLayout::private_dir` 校验，随后立刻以
+/// `O_DIRECTORY|O_NOFOLLOW` 打开成目录句柄并核对身份（`open_agent_home`），之后临时文件创建、
+/// 改名覆盖、删除全部相对这个句柄做（`dirfd::DirHandle`），校验之后路径再被换成链接也影响不到
+/// 写入位置（C2 / I-a）。
 fn write_agent_home(
     layout: &DataLayout,
     app_id: &str,
     settings: &serde_json::Value,
     models_json: Option<&serde_json::Value>,
 ) -> Result<(), String> {
-    let home = layout.private_dir("agenthome", app_id)?;
+    let home = open_agent_home(layout, app_id)?;
     write_agent_home_files(&home, settings, models_json)
 }
 
-/// `write_agent_home` 在已校验目录里的写文件部分。
+/// 校验 agent home（`private_dir`）→ 记下身份 → 打开目录句柄并核对身份。
+fn open_agent_home(layout: &DataLayout, app_id: &str) -> Result<crate::dirfd::DirHandle, String> {
+    let path = layout.private_dir("agenthome", app_id)?;
+    let id = crate::dirfd::identity_of_real_dir(&path)?;
+    crate::dirfd::DirHandle::open_expecting(&path, id)
+}
+
+/// `write_agent_home` 在目录句柄里的写文件部分。
 fn write_agent_home_files(
-    home: &Path,
+    home: &crate::dirfd::DirHandle,
     settings: &serde_json::Value,
     models_json: Option<&serde_json::Value>,
 ) -> Result<(), String> {
-    write_file_replacing(
-        home,
+    home.write_file_replacing(
         "settings.json",
         serde_json::to_string_pretty(settings)
             .map_err(|e| e.to_string())?
             .as_bytes(),
     )?;
-    let models_path = home.join("models.json");
     match models_json {
-        Some(v) => write_file_replacing(
-            home,
+        Some(v) => home.write_file_replacing(
             "models.json",
             serde_json::to_string_pretty(v)
                 .map_err(|e| e.to_string())?
                 .as_bytes(),
         ),
-        // remove_file 对符号链接只删链接本身。
-        None => match std::fs::remove_file(&models_path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.to_string()),
-        },
+        // unlinkat 对符号链接只删链接本身。
+        None => home.remove_file_if_exists("models.json"),
     }
 }
 
@@ -2495,14 +2464,15 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let settings = serde_json::json!({"packages": []});
         let models = serde_json::json!({"providers": {}});
-        write_agent_home_files(&home, &settings, Some(&models)).unwrap();
+        let h = test_handle(&home);
+        write_agent_home_files(&h, &settings, Some(&models)).unwrap();
         assert!(home.join("models.json").exists());
         assert!(home.join("settings.json").exists());
-        write_agent_home_files(&home, &settings, None).unwrap();
+        write_agent_home_files(&h, &settings, None).unwrap();
         assert!(!home.join("models.json").exists());
         assert!(home.join("settings.json").exists());
         // 本就没有时也不报错
-        write_agent_home_files(&home, &settings, None).unwrap();
+        write_agent_home_files(&h, &settings, None).unwrap();
     }
 
     #[test]
@@ -2518,7 +2488,8 @@ mod tests {
         std::os::unix::fs::symlink(&victim_m, home.join("models.json")).unwrap();
         let settings = serde_json::json!({"packages": []});
         let models = serde_json::json!({"providers": {}});
-        write_agent_home_files(&home, &settings, Some(&models)).unwrap();
+        let h = test_handle(&home);
+        write_agent_home_files(&h, &settings, Some(&models)).unwrap();
         assert_eq!(std::fs::read_to_string(&victim_s).unwrap(), "VICTIM-S");
         assert_eq!(std::fs::read_to_string(&victim_m).unwrap(), "VICTIM-M");
         for n in ["settings.json", "models.json"] {
@@ -2532,9 +2503,65 @@ mod tests {
         // models.json 为链接时删除只删链接本身
         std::fs::remove_file(home.join("models.json")).unwrap();
         std::os::unix::fs::symlink(&victim_m, home.join("models.json")).unwrap();
-        write_agent_home_files(&home, &settings, None).unwrap();
+        write_agent_home_files(&h, &settings, None).unwrap();
         assert!(!home.join("models.json").exists());
         assert_eq!(std::fs::read_to_string(&victim_m).unwrap(), "VICTIM-M");
+    }
+
+
+    fn test_handle(dir: &Path) -> crate::dirfd::DirHandle {
+        let id = crate::dirfd::identity_of_real_dir(dir).unwrap();
+        crate::dirfd::DirHandle::open_expecting(dir, id).unwrap()
+    }
+
+    /// I-a：拿到目录句柄之后、写入之前，应用把目录改名并在原位放一个指向受害目录的链接。
+    /// 句柄指向的仍是原目录：文件写进被改名的原目录，受害目录里什么都没有。
+    #[test]
+    fn write_agent_home_via_handle_survives_swap_after_open_ia() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("agenthome").join("a");
+        let moved = tmp.path().join("agenthome").join("a-moved");
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(home.join("models.json"), "OLD").unwrap();
+        let h = test_handle(&home);
+        // 竞态窗口：校验、打开之后，路径被换成链接。
+        std::fs::rename(&home, &moved).unwrap();
+        std::os::unix::fs::symlink(&victim, &home).unwrap();
+        let settings = serde_json::json!({"packages": []});
+        let models = serde_json::json!({"providers": {}});
+        write_agent_home_files(&h, &settings, Some(&models)).unwrap();
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0, "受害目录被写入");
+        assert!(moved.join("settings.json").exists());
+        // 删除 models.json 同样只作用在原目录。
+        std::fs::write(victim.join("models.json"), "VICTIM").unwrap();
+        write_agent_home_files(&h, &settings, None).unwrap();
+        assert!(!moved.join("models.json").exists());
+        assert_eq!(
+            std::fs::read_to_string(victim.join("models.json")).unwrap(),
+            "VICTIM"
+        );
+    }
+
+    /// I-a：校验记下身份之后、打开之前被换成链接 / 换成别的真目录 → 打开被拒。
+    #[test]
+    fn open_dir_handle_rejects_swap_before_open_ia() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("a");
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&victim).unwrap();
+        let id = crate::dirfd::identity_of_real_dir(&home).unwrap();
+        // 换成链接
+        std::fs::rename(&home, tmp.path().join("a-moved")).unwrap();
+        std::os::unix::fs::symlink(&victim, &home).unwrap();
+        assert!(crate::dirfd::DirHandle::open_expecting(&home, id).is_err());
+        // 换成另一个真目录（身份不同）
+        std::fs::remove_file(&home).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        assert!(crate::dirfd::DirHandle::open_expecting(&home, id).is_err());
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
     }
 
     /// C2：agent home 目录本身被换成指向受害目录的符号链接时，`write_agent_home` 拒绝，

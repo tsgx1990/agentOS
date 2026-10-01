@@ -3,6 +3,7 @@ pub mod approvals;
 pub mod audit;
 pub mod byok;
 pub mod call_bus;
+pub mod dirfd;
 pub mod capabilities;
 pub mod capability;
 pub mod install;

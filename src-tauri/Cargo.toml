@@ -66,5 +66,11 @@ sha2 = "0.10"
 # 依赖，这里升级成直接依赖，不新增依赖树。license MIT/Apache-2.0（双许可）。
 url = "2"
 
+# I-a/I-c：宿主在沙盒外写应用可写目录时用目录句柄（openat/renameat/unlinkat），不跟随路径上的
+# 符号链接。rustix 已在 Cargo.lock 里作传递依赖（1.1.4），升级成直接依赖；只开 std + fs，不手写 FFI。
+# 仅 unix（沙盒本身只有 macOS seatbelt）。license Apache-2.0 WITH LLVM-exception / Apache-2.0 / MIT。
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["std", "fs"] }
+
 [dev-dependencies]
 tempfile = "3"

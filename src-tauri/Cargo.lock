@@ -3509,6 +3509,7 @@ dependencies = [
  "keyring",
  "regex",
  "reqwest",
+ "rustix",
  "semver",
  "serde",
  "serde_json",
