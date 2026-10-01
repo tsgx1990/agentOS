@@ -35,11 +35,30 @@ pub struct UsageResponse {
     pub cost: f64,
 }
 
+/// `(app_id, provider, model)`。
+type ModelKey = (String, String, String);
+
+/// 按 (provider, model) 拆分的一行用量（`usage_by_model` 命令的返回元素）。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ModelUsageRow {
+    pub app_id: String,
+    pub provider: String,
+    pub model: String,
+    pub input: u64,
+    pub output: u64,
+    pub cost: f64,
+}
+
 /// per-app 用量状态：`app_id -> 最近一次 get_session_stats 响应的快照`。
 /// 见模块文档："覆盖式 set，不是累加"这条核心语义。
 #[derive(Default)]
 pub struct UsageAccumulator {
     inner: Mutex<HashMap<String, UsageResponse>>,
+    /// 按模型的拆分：`(app_id, provider, model) -> 累加值`。来自每条 assistant
+    /// `message_end` 的 `usage`——每条是**不同**的消息，所以这里是**累加**；与上面
+    /// `inner` 的覆盖式总量口径不同，两者不矛盾。总量 − 各模型之和 = 工具/压缩等
+    /// 其它开销，界面单列，不硬凑相等。两者都只算当前会话，由 `reset_app` 一起清零。
+    by_model: Mutex<HashMap<ModelKey, (u64, u64, f64)>>,
 }
 
 impl UsageAccumulator {
@@ -61,6 +80,61 @@ impl UsageAccumulator {
                 cost,
             },
         );
+    }
+
+    /// 累加一条 assistant 消息的用量到 `(app_id, provider, model)` 名下。
+    pub async fn add_message(
+        &self,
+        app_id: &str,
+        provider: &str,
+        model: &str,
+        input: u64,
+        output: u64,
+        cost: f64,
+    ) {
+        let mut guard = self.by_model.lock().await;
+        let e = guard
+            .entry((app_id.to_string(), provider.to_string(), model.to_string()))
+            .or_insert((0, 0, 0.0));
+        e.0 += input;
+        e.1 += output;
+        e.2 += cost;
+    }
+
+    /// 会话（重新）启动时调用：同时清零该 app 的总量快照与按模型拆分。
+    pub async fn reset_app(&self, app_id: &str) {
+        self.inner.lock().await.remove(app_id);
+        self.by_model
+            .lock()
+            .await
+            .retain(|(a, _, _), _| a != app_id);
+    }
+
+    /// 按模型拆分的行；`app_id` 为 `None` 返回所有应用。按 cost 降序，
+    /// 再按 (app_id, provider, model) 升序。
+    pub async fn rows(&self, app_id: Option<&str>) -> Vec<ModelUsageRow> {
+        let guard = self.by_model.lock().await;
+        let mut rows: Vec<ModelUsageRow> = guard
+            .iter()
+            .filter(|((a, _, _), _)| app_id.is_none_or(|x| x == a))
+            .map(|((a, p, m), (i, o, c))| ModelUsageRow {
+                app_id: a.clone(),
+                provider: p.clone(),
+                model: m.clone(),
+                input: *i,
+                output: *o,
+                cost: *c,
+            })
+            .collect();
+        rows.sort_by(|x, y| {
+            y.cost
+                .partial_cmp(&x.cost)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    (&x.app_id, &x.provider, &x.model).cmp(&(&y.app_id, &y.provider, &y.model))
+                })
+        });
+        rows
     }
 
     /// 读取该 app 目前记录的最新用量快照；未曾收到过任何 `get_session_stats`
@@ -103,6 +177,60 @@ mod tests {
                 cost: 0.025
             }
         );
+    }
+
+    #[tokio::test]
+    async fn add_message_accumulates_per_model() {
+        // 每条 message_end 是不同的消息，所以按模型是累加；同一 (provider, model) 合并成一行。
+        let acc = UsageAccumulator::new();
+        acc.add_message("a", "anthropic", "m1", 10, 5, 0.01).await;
+        acc.add_message("a", "anthropic", "m1", 20, 7, 0.02).await;
+        acc.add_message("a", "openai", "m1", 1, 1, 0.5).await;
+        let rows = acc.rows(Some("a")).await;
+        assert_eq!(rows.len(), 2);
+        let r = rows.iter().find(|r| r.provider == "anthropic").unwrap();
+        assert_eq!((r.input, r.output), (30, 12));
+        assert!((r.cost - 0.03).abs() < 1e-12);
+        // 总量仍是覆盖式、与拆分互不影响
+        acc.set_latest("a", 100, 50, 0.9).await;
+        acc.set_latest("a", 200, 60, 1.0).await;
+        assert_eq!(acc.get("a").await.input, 200);
+        assert_eq!(acc.rows(Some("a")).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn rows_filter_by_app_and_sort_by_cost() {
+        let acc = UsageAccumulator::new();
+        acc.add_message("a", "p", "cheap", 1, 1, 0.01).await;
+        acc.add_message("a", "p", "dear", 1, 1, 0.5).await;
+        acc.add_message("b", "p", "other", 1, 1, 9.0).await;
+        let rows = acc.rows(Some("a")).await;
+        assert_eq!(
+            rows.iter().map(|r| r.model.as_str()).collect::<Vec<_>>(),
+            vec!["dear", "cheap"]
+        );
+        let all = acc.rows(None).await;
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].app_id, "b");
+        // 同 cost 按 (app_id, provider, model) 升序
+        acc.add_message("a", "p", "zz", 1, 1, 0.01).await;
+        let rows = acc.rows(Some("a")).await;
+        assert_eq!(rows[1].model, "cheap");
+        assert_eq!(rows[2].model, "zz");
+    }
+
+    #[tokio::test]
+    async fn reset_app_clears_total_and_breakdown() {
+        let acc = UsageAccumulator::new();
+        acc.set_latest("a", 100, 50, 0.1).await;
+        acc.add_message("a", "p", "m", 100, 50, 0.1).await;
+        acc.set_latest("b", 1, 1, 0.1).await;
+        acc.add_message("b", "p", "m", 1, 1, 0.1).await;
+        acc.reset_app("a").await;
+        assert_eq!(acc.get("a").await, UsageResponse::default());
+        assert!(acc.rows(Some("a")).await.is_empty());
+        assert_eq!(acc.get("b").await.input, 1);
+        assert_eq!(acc.rows(Some("b")).await.len(), 1);
     }
 
     #[tokio::test]

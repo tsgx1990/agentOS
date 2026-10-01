@@ -504,6 +504,16 @@ async fn app_usage(app_id: String, app: tauri::AppHandle) -> Result<usage::Usage
     Ok(state.usage.usage_response(&app_id).await)
 }
 
+/// P6-D Task5：按 (provider, model) 拆分的用量；`app_id` 为空返回所有应用。
+/// 总量见 `app_usage`；总量减各模型之和即「其他（工具 / 压缩）」，界面单列。
+#[tauri::command]
+async fn usage_by_model(
+    app_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<usage::ModelUsageRow>, String> {
+    Ok(app.state::<AppState>().usage.rows(app_id.as_deref()).await)
+}
+
 /// P3 Task17：`ConnectorSettings.tsx` 读取已配置的 MCP server 列表。薄封装——
 /// 真正逻辑（含 keychain 存取/悬空索引自愈）在 `vault::list_servers`（Task1
 /// 已实现+测试，见其文档），Task1 只留了自由函数、没有接进
@@ -625,6 +635,8 @@ async fn start_main_session(app: tauri::AppHandle) -> Result<(), String> {
     let (session, rx) = RpcSession::spawn_with(&session_dir, ml.env, ml.args).await?;
 
     let state = app.state::<AppState>();
+    // 新会话的用量从零开始：总量与按模型拆分一起清零。
+    state.usage.reset_app("main").await;
     *state.main_session.lock().await = Some(session);
 
     // 事件转发 + 退避重启看护：PiEvent → 前端事件；rx 关闭（pi 进程退出）时
@@ -704,6 +716,19 @@ async fn start_main_session(app: tauri::AppHandle) -> Result<(), String> {
                             .set_latest("main", input, output, cost)
                             .await;
                     }
+                    // P6-D Task5：按 (provider, model) 累加；总量仍由上面的 SessionStats 覆盖。
+                    PiEvent::AssistantUsage {
+                        provider,
+                        model,
+                        input,
+                        output,
+                        cost,
+                    } => {
+                        app.state::<AppState>()
+                            .usage
+                            .add_message("main", &provider, &model, input, output, cost)
+                            .await;
+                    }
                     PiEvent::Other(_) => {}
                 }
             }
@@ -715,6 +740,8 @@ async fn start_main_session(app: tauri::AppHandle) -> Result<(), String> {
                     let ml = main_session_launch(&layout);
                     match RpcSession::spawn_with(&session_dir, ml.env, ml.args).await {
                         Ok((s, new_rx)) => {
+                            // 重启后是新的 pi 会话（累计值从零起），两份用量一起清零。
+                            app.state::<AppState>().usage.reset_app("main").await;
                             *app.state::<AppState>().main_session.lock().await = Some(s);
                             rx = new_rx;
                             backoff.reset();
@@ -1566,6 +1593,7 @@ pub fn run() {
             maker_respond_install_confirm,
             list_pending_installs,
             app_usage,
+            usage_by_model,
             list_servers,
             put_server,
             delete_server,

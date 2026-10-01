@@ -57,6 +57,18 @@ pub enum PiEvent {
         output: u64,
         cost: f64,
     },
+    /// P6-D Task5：一条 assistant 消息结束（`message_end`，`message.role=="assistant"`）。
+    /// 带这条消息实际使用的 `provider`/`model` 与它自己的 `usage`——每条都是**不同**的
+    /// 消息，消费点（`usage::UsageAccumulator::add_message`）据此**累加**出按模型的拆分；
+    /// 这与 `SessionStats`（会话累计值、覆盖式）口径不同、并不矛盾：总量以
+    /// `SessionStats` 为准（含工具与压缩开销），拆分只覆盖 assistant 消息。
+    AssistantUsage {
+        provider: String,
+        model: String,
+        input: u64,
+        output: u64,
+        cost: f64,
+    },
     Other(serde_json::Value),
 }
 
@@ -100,12 +112,46 @@ fn parse_session_stats(v: &serde_json::Value) -> Option<(u64, u64, f64)> {
     Some((input, output, cost))
 }
 
+/// 解析 assistant 的 `message_end`：`message.role=="assistant"`，`message.provider`/`model`
+/// 为字符串，`message.usage.input`/`output` 为数字；`cost` 取 `usage.cost.total`，缺省 0.0。
+/// 任一必需字段缺失 → `None`（调用方落回 `PiEvent::Other`）。形状见 `probe.rs` 文档注释
+/// 里的真实 pi 实测记录与 `rpc.md` 的 AssistantMessage。
+fn parse_assistant_usage(v: &serde_json::Value) -> Option<(String, String, u64, u64, f64)> {
+    if v.get("type")?.as_str()? != "message_end" {
+        return None;
+    }
+    let m = v.get("message")?;
+    if m.get("role")?.as_str()? != "assistant" {
+        return None;
+    }
+    let provider = m.get("provider")?.as_str()?.to_string();
+    let model = m.get("model")?.as_str()?.to_string();
+    let usage = m.get("usage")?;
+    let input = usage.get("input")?.as_u64()?;
+    let output = usage.get("output")?.as_u64()?;
+    let cost = usage
+        .get("cost")
+        .and_then(|c| c.get("total"))
+        .and_then(|c| c.as_f64())
+        .unwrap_or(0.0);
+    Some((provider, model, input, output, cost))
+}
+
 fn classify(v: &serde_json::Value) -> PiEvent {
     // 优先级高于下面按 `type` 的分派：`get_session_stats` 的响应本身 `type` 就是
     // "response"，不落在下面任何一个 `agent_end`/`tool_execution_end` 等事件
     // `type` 分支里，必须单独识别（否则会被 `_ => Other` 兜底吞掉）。
     if let Some((input, output, cost)) = parse_session_stats(v) {
         return PiEvent::SessionStats {
+            input,
+            output,
+            cost,
+        };
+    }
+    if let Some((provider, model, input, output, cost)) = parse_assistant_usage(v) {
+        return PiEvent::AssistantUsage {
+            provider,
+            model,
             input,
             output,
             cost,
@@ -556,6 +602,74 @@ mod tests {
                 assert!((cost - 0.01).abs() < 1e-9);
             }
             other => panic!("应收到 SessionStats 事件，实际 {other:?}"),
+        }
+    }
+
+    // ---- P6-D Task5：assistant message_end -> AssistantUsage ----
+
+    #[test]
+    fn classify_assistant_message_end_is_assistant_usage() {
+        // 形状取自 rpc.md 的 AssistantMessage 与 probe.rs 的实测注释。
+        let v = serde_json::json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "OK"}],
+                "provider": "anthropic",
+                "model": "claude-sonnet-5",
+                "stopReason": "stop",
+                "usage": {
+                    "input": 120, "output": 45, "cacheRead": 0, "cacheWrite": 0,
+                    "totalTokens": 165,
+                    "cost": {"input": 0.001, "output": 0.002, "total": 0.003}
+                }
+            }
+        });
+        match classify(&v) {
+            PiEvent::AssistantUsage {
+                provider,
+                model,
+                input,
+                output,
+                cost,
+            } => {
+                assert_eq!(provider, "anthropic");
+                assert_eq!(model, "claude-sonnet-5");
+                assert_eq!((input, output), (120, 45));
+                assert!((cost - 0.003).abs() < 1e-12);
+            }
+            other => panic!("应分类为 AssistantUsage，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_user_message_end_is_other() {
+        let v = serde_json::json!({
+            "type": "message_end",
+            "message": {"role": "user", "content": []}
+        });
+        assert!(matches!(classify(&v), PiEvent::Other(_)));
+    }
+
+    #[test]
+    fn classify_message_end_without_usage_is_other() {
+        let v = serde_json::json!({
+            "type": "message_end",
+            "message": {"role": "assistant", "provider": "p", "model": "m", "content": []}
+        });
+        assert!(matches!(classify(&v), PiEvent::Other(_)));
+    }
+
+    #[test]
+    fn classify_message_end_missing_cost_defaults_to_zero() {
+        let v = serde_json::json!({
+            "type": "message_end",
+            "message": {"role": "assistant", "provider": "p", "model": "m",
+                        "usage": {"input": 1, "output": 2}}
+        });
+        match classify(&v) {
+            PiEvent::AssistantUsage { cost, .. } => assert_eq!(cost, 0.0),
+            other => panic!("应分类为 AssistantUsage，实际 {other:?}"),
         }
     }
 }

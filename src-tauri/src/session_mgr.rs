@@ -731,6 +731,9 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
             return Err("无空闲界面槽位".into());
         }
     };
+    // P6-D Task5：新会话的用量从零开始（总量与按模型拆分一起清零）；放在事件循环
+    // 启动之前，避免清零晚于首条用量事件。
+    state.usage.reset_app(&app_id).await;
     state
         .app_sessions
         .lock()
@@ -859,6 +862,19 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
                             .set_latest(&id, input, output, cost)
                             .await;
                     }
+                    // P6-D Task5：按 (provider, model) 累加（每条 message_end 是不同的消息）。
+                    PiEvent::AssistantUsage {
+                        provider,
+                        model,
+                        input,
+                        output,
+                        cost,
+                    } => {
+                        app.state::<crate::app_state::AppState>()
+                            .usage
+                            .add_message(&id, &provider, &model, input, output, cost)
+                            .await;
+                    }
                     PiEvent::Other(_) => {}
                 }
             }
@@ -890,6 +906,11 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
                     .await
                     {
                         Ok((s, new_rx)) => {
+                            // 重启后是新的 pi 会话（累计值从零起），两份用量一起清零。
+                            app.state::<crate::app_state::AppState>()
+                                .usage
+                                .reset_app(&id)
+                                .await;
                             app.state::<crate::app_state::AppState>()
                                 .app_sessions
                                 .lock()
