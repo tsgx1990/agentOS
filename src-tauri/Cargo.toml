@@ -4,6 +4,9 @@ version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
+# src/bin/ 下还有测试替身；不写 default-run 时 `tauri build` 会选错 .app 的主程序
+# （tests/bundle_main_binary_it.rs 钉住）。
+default-run = "super-agent-os"
 
 [lib]
 name = "super_agent_os"
