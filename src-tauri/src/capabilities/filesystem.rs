@@ -96,22 +96,6 @@ fn non_app_data(specs: &[String]) -> impl Iterator<Item = &String> {
     specs.iter().filter(|s| split(s).0 != "$APP_DATA")
 }
 
-/// 确认 `candidate`（已 canonicalize）确实落在 `base`（已 canonicalize）之内，含 `base` 自身。
-/// 逐路径分量比较（`Path::starts_with`），不是字符串前缀比较——防"名字带公共前缀的兄弟目录"
-/// 误判（如 `.../dl` vs `.../dl2`：字符串前缀成立但不是子目录，必须判否）。纯函数、不做 IO，
-/// 调用方（`confined_expand`）负责把两个参数都 canonicalize 好再传进来。
-pub(crate) fn confine_under(base: &Path, candidate: &Path) -> Result<PathBuf, String> {
-    if candidate.starts_with(base) {
-        Ok(candidate.to_path_buf())
-    } else {
-        Err(format!(
-            "{} 不在 {} 之内",
-            candidate.display(),
-            base.display()
-        ))
-    }
-}
-
 /// 共用前置：校验 spec + 展开成候选路径 + 复核 `base` 落在 `home` 之下（P6-A 加固：
 /// 防"某标准目录被替换成指向用户主目录之外的东西"——例如测试/精简系统上
 /// `dirs::download_dir()` 被环境变量污染指向别处，或未来平台适配层算错了标准目录）。
@@ -157,7 +141,7 @@ fn expand_and_check_base(
 
 /// 授权目录的「真实性」检查（I-c）：用户授权的目录由应用在沙盒里读写，应用可以把授权的
 /// 子目录改名后换成链接，指向**同一标准目录里的其它位置**——规范化后仍在 `base` 之内，
-/// 单靠 `confine_under` 拦不住，但已超出用户同意的范围。所以对每个贡献给沙盒的路径要求：
+/// 单靠「规范化后仍在 base 内」拦不住，但已超出用户同意的范围。所以对每个贡献给沙盒的路径要求：
 /// 存在时不是符号链接，且规范化后**等于**按字面从已规范化的 `base` 推出的预期路径
 /// （这同时挡住中间某一级被换成链接）。返回 `Ok(None)` 表示路径尚不存在，`Ok(Some(is_dir))`
 /// 表示存在且合格，`Err` 表示被换链（可读错误，调用方 fail-closed、不贡献该路径）。
@@ -362,7 +346,7 @@ mod tests {
     fn downloads_base_dir_is_absolute_and_has_chinese_name() {
         // M-4（review）：同上，改测 `base_dir`（生产入口 `confined_expand`/
         // `confined_expand_write` 用它取真实标准目录）——只断言"是绝对路径"这条不依赖
-        // 该目录在磁盘上是否真的存在的属性，不通过 `expand_and_check_base`/`confine_under`
+        // 该目录在磁盘上是否真的存在的属性，不通过 `expand_and_check_base`
         // 走完整的 canonicalize+home 复核（那条路径需要 `~/Downloads` 真实存在，不该让
         // 一条纯断言"返回值形状"的单测依赖测试机器的磁盘状态）。
         let p = base_dir("$DOWNLOADS").expect("本机应有下载目录标准路径");
@@ -394,45 +378,6 @@ mod tests {
             );
         }
     }
-    #[test]
-    fn confine_under_allows_subpath_and_self_denies_symlink_escape_and_prefix_sibling() {
-        let root = tempfile::tempdir().unwrap();
-        let base = root.path().join("dl");
-        std::fs::create_dir_all(&base).unwrap();
-        let base = std::fs::canonicalize(&base).unwrap();
-
-        // (a) base/sub -> Ok
-        let sub = base.join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-        assert!(confine_under(&base, &sub).is_ok(), "base 的子目录应放行");
-
-        // (b) base 本身 -> Ok
-        assert!(confine_under(&base, &base).is_ok(), "base 自身应放行");
-
-        // (c) base 内一个符号链接指向 base 外部的目录：canonicalize 后应被拒
-        let outside = root.path().join("outside");
-        std::fs::create_dir_all(&outside).unwrap();
-        let outside = std::fs::canonicalize(&outside).unwrap();
-        let link = base.join("escape");
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
-        let resolved = std::fs::canonicalize(&link).unwrap();
-        assert_eq!(resolved, outside, "前置：符号链接应解析到 base 外部");
-        assert!(
-            confine_under(&base, &resolved).is_err(),
-            "符号链接逃出 base 后应被拒"
-        );
-
-        // (d) 名字带公共前缀的兄弟目录（.../dl vs .../dl2）：必须按路径分量比较，
-        // 不能被字符串前缀误判为在 base 之内
-        let sibling = root.path().join("dl2");
-        std::fs::create_dir_all(&sibling).unwrap();
-        let sibling = std::fs::canonicalize(&sibling).unwrap();
-        assert!(
-            confine_under(&base, &sibling).is_err(),
-            "字符串前缀相同但不是子目录的兄弟应被拒"
-        );
-    }
-
     #[test]
     fn render_lists_read_and_write_separately_skipping_app_data() {
         let mut p = Permissions::default();
