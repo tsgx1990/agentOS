@@ -247,6 +247,36 @@ fn resolve_model_launch_with(
     ))
 }
 
+/// 重启用的（环境变量, 命令行参数）。
+type RelaunchInputs = (Vec<(String, String)>, Vec<String>);
+
+/// 退避重启用：重新解析模型选择（应用覆盖 / 全局默认 / 钥匙串里的最新密钥）、
+/// 重写 agent home（settings.json / models.json），并把新的 `--provider/--model` 参数与
+/// 密钥环境变量接到「不含模型部分」的基础参数 / 环境之后。首次启动沿用的 env 与参数
+/// 是启动那一刻的快照，用户之后改了默认、换了密钥、删了自定义服务，崩溃重启就会带着
+/// 过期值起会话，所以每次重启都要重新走一遍这条路径。解析失败（配置文件损坏）返回 Err。
+fn relaunch_inputs_with(
+    layout: &DataLayout,
+    app_id: &str,
+    manifest: &crate::pkg::Manifest,
+    settings: &serde_json::Value,
+    base_env: &[(String, String)],
+    base_args: &[String],
+    lookup_key: impl Fn(&str) -> Option<String>,
+) -> Result<RelaunchInputs, String> {
+    let ml = resolve_model_launch_with(layout, app_id, manifest, lookup_key)?;
+    write_agent_home(
+        &layout.agent_home_dir(app_id),
+        settings,
+        ml.models_json.as_ref(),
+    )?;
+    let mut env = base_env.to_vec();
+    env.extend(ml.env);
+    let mut args = base_args.to_vec();
+    args.extend(ml.args);
+    Ok((env, args))
+}
+
 /// 写 settings.json；`models_json` 为 Some 则写 models.json，None 则删除旧的 models.json
 /// （NotFound 忽略）——防止撤销自定义 provider 后旧文件残留。models.json 里只有
 /// `${环境变量名}` 引用，没有密钥字面值。
@@ -768,8 +798,22 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
     // per-app 事件转发 + 退避重启看护（仿 P0 start_main_session）：
     // 事件名统一带 `:<appId>` 后缀，UiEmit → `ui-emit:<appId>`。
     let id = app_id.clone();
-    let restart_env = plan.env;
-    let restart_args = plan.extra_args;
+    // 重启用「不含模型部分」的基础 env / 参数（模型部分每次重启时重新解析，见
+    // `relaunch_inputs_with`）；首次启动仍用上面含模型部分的 `plan`。
+    let base_plan = assemble_launch_plan(
+        &record,
+        &manifest,
+        &contribution,
+        &layout,
+        &hosttools,
+        sandboxed,
+        &ModelLaunch::default(),
+    );
+    let restart_base_env = base_plan.env;
+    let restart_base_args = base_plan.extra_args;
+    let restart_settings = build_settings_json(&record, &layout, sandboxed);
+    let restart_manifest = manifest;
+    let restart_layout = layout.clone();
     let restart_trusted = record.trusted;
     let restart_mcp_socket = injected_mcp_socket;
     let restart_sandbox_read = plan.sandbox_read;
@@ -893,12 +937,35 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
             match backoff.next_delay() {
                 Some(delay) => {
                     tokio::time::sleep(delay).await;
+                    let (restart_env, restart_args) = match relaunch_inputs_with(
+                        &restart_layout,
+                        &id,
+                        &restart_manifest,
+                        &restart_settings,
+                        &restart_base_env,
+                        &restart_base_args,
+                        crate::secrets::read_key,
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // 配置文件损坏等：不带着过期的 env/参数硬起，走与 spawn 失败相同的
+                            // 退避路径（continue），并把原因告诉界面。
+                            let _ = app.emit(
+                                &format!("agent-error:{id}"),
+                                serde_json::json!({
+                                    "kind": "model_config",
+                                    "message": format!("应用 {id} 重启时读取模型配置失败：{e}")
+                                }),
+                            );
+                            continue;
+                        }
+                    };
                     match spawn_app_session(
                         &session_dir,
                         &app_data_dir,
                         restart_trusted,
-                        restart_env.clone(),
-                        restart_args.clone(),
+                        restart_env,
+                        restart_args,
                         restart_mcp_socket.clone(),
                         restart_sandbox_read.clone(),
                         restart_sandbox_write.clone(),
@@ -2088,6 +2155,101 @@ mod tests {
             e.contains("model-overrides.json") && e.contains("修复或删除"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn relaunch_inputs_reresolve_model_and_rewrite_agent_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        std::fs::write(
+            layout.providers_path(),
+            serde_json::json!({"version": 1, "custom": [{
+                "id": "custom-mock", "display": "Mock",
+                "base_url": "http://127.0.0.1:9/v1",
+                "api": "openai-completions", "models": ["m1"]
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let set_override = |v: serde_json::Value| {
+            std::fs::write(layout.model_overrides_path(), v.to_string()).unwrap();
+        };
+        let key = |_: &str| Some("sk-test-fake".to_string());
+        let settings = serde_json::json!({"packages": []});
+        let base_env = vec![("BASE".to_string(), "1".to_string())];
+        let base_args = vec!["--tools".to_string(), "read".to_string()];
+        let home = layout.agent_home_dir("a");
+
+        // 首次：覆盖到自定义 provider -> 带模型参数、密钥 env，并写出 models.json。
+        set_override(serde_json::json!({"version": 1, "global": null,
+            "apps": {"a": {"provider": "custom-mock", "model": "m1"}}}));
+        let (env, args) = relaunch_inputs_with(
+            &layout,
+            "a",
+            &manifest_min(),
+            &settings,
+            &base_env,
+            &base_args,
+            key,
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            [
+                "--tools",
+                "read",
+                "--provider",
+                "custom-mock",
+                "--model",
+                "m1"
+            ]
+        );
+        assert!(env.contains(&("BASE".to_string(), "1".to_string())));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "SUPERAGENT_KEY_CUSTOM_MOCK" && v == "sk-test-fake"));
+        assert!(home.join("models.json").exists());
+
+        // 用户之后把覆盖改成原生 provider：再次重启必须拿到新结果（新参数、不再带自定义密钥、
+        // models.json 被清掉），而不是沿用首次启动的快照。
+        set_override(serde_json::json!({"version": 1, "global": null,
+            "apps": {"a": {"provider": "deepseek", "model": "deepseek-v4-flash"}}}));
+        let (env, args) = relaunch_inputs_with(
+            &layout,
+            "a",
+            &manifest_min(),
+            &settings,
+            &base_env,
+            &base_args,
+            key,
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            [
+                "--tools",
+                "read",
+                "--provider",
+                "deepseek",
+                "--model",
+                "deepseek-v4-flash"
+            ]
+        );
+        assert!(!env.iter().any(|(k, _)| k == "SUPERAGENT_KEY_CUSTOM_MOCK"));
+        assert!(!home.join("models.json").exists());
+
+        // 配置损坏：返回 Err（调用方走退避失败路径），不静默沿用旧值。
+        std::fs::write(layout.model_overrides_path(), "{ bad").unwrap();
+        assert!(relaunch_inputs_with(
+            &layout,
+            "a",
+            &manifest_min(),
+            &settings,
+            &base_env,
+            &base_args,
+            key,
+        )
+        .is_err());
     }
 
     #[test]
