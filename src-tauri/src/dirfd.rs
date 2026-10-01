@@ -80,6 +80,25 @@ mod unix_impl {
             Ok(Self { fd })
         }
 
+        /// 在句柄目录里取子目录句柄：不存在就 `mkdirat` 建，再以 `O_DIRECTORY|O_NOFOLLOW`
+        /// 打开。子目录若是符号链接 → 打开失败，绝不跟随。
+        pub fn open_subdir_creating(&self, name: &str) -> Result<DirHandle, String> {
+            check_name(name)?;
+            match rustix::fs::mkdirat(&self.fd, name, Mode::from_raw_mode(0o755)) {
+                Ok(()) => {}
+                Err(e) if e == rustix::io::Errno::EXIST => {}
+                Err(e) => return Err(io_err(e).to_string()),
+            }
+            let fd = rustix::fs::openat(
+                &self.fd,
+                name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| format!("子目录 {name} 不是真实目录（可能是符号链接）：{e}"))?;
+            Ok(DirHandle { fd })
+        }
+
         /// 句柄自己的身份。
         pub fn identity(&self) -> Result<DirIdentity, String> {
             let st = rustix::fs::fstat(&self.fd).map_err(|e| e.to_string())?;
@@ -163,6 +182,12 @@ impl DirHandle {
         Ok(Self {
             path: path.to_path_buf(),
         })
+    }
+    pub fn open_subdir_creating(&self, name: &str) -> Result<DirHandle, String> {
+        let p = self.path.join(name);
+        std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        identity_of_real_dir(&p)?;
+        Ok(DirHandle { path: p })
     }
     pub fn identity(&self) -> Result<DirIdentity, String> {
         Ok(DirIdentity { dev: 0, ino: 0 })

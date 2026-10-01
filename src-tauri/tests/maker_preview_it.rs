@@ -105,10 +105,11 @@ async fn preview_session_wraps_real_sandbox_exec_and_mock_pi_reaches_ready() {
 
     let (_tmp, layout, _manager) = temp_layout();
     write_valid_maker_draft(&layout, "draft-preview-lowlevel");
-    let staging_dir = layout.maker_staging_dir("draft-preview-lowlevel");
-    // spawn_preview_session 内部同样要求 staging_dir 已存在（write_valid_maker_draft
-    // 已经 mkdir -p 过）才能 canonicalize——先做一次，拿到与生产路径一致的规范化路径。
-    let canonical_staging_dir = std::fs::canonicalize(&staging_dir).unwrap();
+    // 与生产同源：由已规范化的数据根按字面推出并校验（`checked_maker_staging_dir`），
+    // 而不是对路径先 canonicalize 再用。
+    let canonical_staging_dir = layout
+        .checked_maker_staging_dir("draft-preview-lowlevel")
+        .unwrap();
 
     let extra_args = vec!["--tools".to_string(), PREVIEW_EXTRA_ARGS_TOOLS.to_string()];
 

@@ -224,23 +224,37 @@ fn handle_stage_write(params: serde_json::Value, layout: &DataLayout) -> serde_j
         return stage_write_error(&e);
     }
 
-    let staging_dir = layout.maker_staging_dir(draft_id);
-    if let Err(e) = std::fs::create_dir_all(&staging_dir) {
-        return stage_write_error(&format!("创建暂存目录失败：{e}"));
-    }
+    // 暂存目录在预览会话里对草稿应用可写：路径经 `checked_maker_staging_dir` 校验（真目录、
+    // 非链接、等于由规范化数据根按字面推出的预期路径），随后立刻取目录句柄；`rel_path` 的每一级
+    // 子目录与最终文件都相对句柄、以 O_NOFOLLOW 打开/创建，应用放的链接既不会被跟随、
+    // 校验后再换链也无效。
+    let staging_dir = match layout.checked_maker_staging_dir(draft_id) {
+        Ok(p) => p,
+        Err(e) => return stage_write_error(&format!("暂存目录不可用：{e}")),
+    };
 
     let resolved = match resolve_staging_path(&staging_dir, rel_path) {
         Ok(p) => p,
         Err(e) => return stage_write_error(&e),
     };
 
-    if let Some(parent) = resolved.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return stage_write_error(&format!("创建父目录失败：{e}"));
+    let write = || -> Result<(), String> {
+        let id = crate::dirfd::identity_of_real_dir(&staging_dir)?;
+        let mut dir = crate::dirfd::DirHandle::open_expecting(&staging_dir, id)?;
+        let mut names: Vec<String> = Path::new(rel_path)
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect();
+        let file = names.pop().ok_or_else(|| "rel_path 不能为空".to_string())?;
+        for d in &names {
+            dir = dir.open_subdir_creating(d)?;
         }
-    }
-
-    if let Err(e) = std::fs::write(&resolved, content) {
+        dir.write_file_replacing(&file, content.as_bytes())
+    };
+    if let Err(e) = write() {
         return stage_write_error(&format!("写入暂存文件失败：{e}"));
     }
 
@@ -330,7 +344,7 @@ fn install_error(msg: &str) -> serde_json::Value {
 ///    的草稿（缺 `package.json`/`superagent` 块/UI 文件等）在这里就被拒绝，不
 ///    浪费一次沙盒会话去跑一个注定打不开的包（与 `handle_install` 同款前置校验，
 ///    见该函数文档）。
-/// 4. 校验通过：`session_mgr::spawn_preview_session(&staging_dir)`——真正拉起
+/// 4. 校验通过：`session_mgr::spawn_preview_session(layout, draft_id)`——真正拉起
 ///    沙盒预览会话并驱动到 ready；`Ok(())` 回 `{ok:true}`，`Err(e)` 回
 ///    `{ok:false,error:e}`。
 async fn handle_preview(params: serde_json::Value, layout: &DataLayout) -> serde_json::Value {
@@ -343,12 +357,16 @@ async fn handle_preview(params: serde_json::Value, layout: &DataLayout) -> serde
         return preview_error(&e);
     }
 
-    let staging_dir = layout.maker_staging_dir(draft_id);
+    // 草稿目录对预览应用可写，路径经 `checked_maker_staging_dir` 校验（I-b），不先规范化再用。
+    let staging_dir = match layout.checked_maker_staging_dir(draft_id) {
+        Ok(p) => p,
+        Err(e) => return preview_error(&format!("暂存目录不可用：{e}")),
+    };
     if let Err(e) = pkg::load_and_validate(&staging_dir) {
         return preview_error(&e.to_string());
     }
 
-    match session_mgr::spawn_preview_session(&staging_dir).await {
+    match session_mgr::spawn_preview_session(layout, draft_id).await {
         Ok(()) => serde_json::json!({ "ok": true }),
         Err(e) => preview_error(&e),
     }
@@ -725,6 +743,36 @@ pub fn minimal_permission_warnings(
 
 #[cfg(test)]
 mod tests {
+    /// I-b：草稿暂存目录被换成链接 / 草稿内子目录被换成链接后再 stage_write → 拒绝、
+    /// 受害目录无写入；正常写入照常。
+    #[test]
+    fn stage_write_rejects_symlinked_staging_and_subdir_ib() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        let ok = |d: &str, rel: &str| {
+            handle_stage_write(
+                serde_json::json!({"draft_id": d, "rel_path": rel, "content": "X"}),
+                &layout,
+            )
+        };
+        assert_eq!(ok("good", "agent/persona.md")["ok"], serde_json::json!(true));
+        // 暂存目录本身是链接
+        std::os::unix::fs::symlink(&victim, tmp.path().join("maker-staging/bad")).unwrap();
+        assert_eq!(ok("bad", "package.json")["ok"], serde_json::json!(false));
+        // 草稿内子目录是链接（预览会话里的应用可以这样放）
+        let st = layout.checked_maker_staging_dir("sub").unwrap();
+        std::os::unix::fs::symlink(&victim, st.join("agent")).unwrap();
+        assert_eq!(ok("sub", "agent/persona.md")["ok"], serde_json::json!(false));
+        // 目标文件本身是指向受害文件的链接：被替换而不是被跟随
+        std::fs::write(victim.join("f"), "VICTIM").unwrap();
+        std::os::unix::fs::symlink(victim.join("f"), st.join("package.json")).unwrap();
+        assert_eq!(ok("sub", "package.json")["ok"], serde_json::json!(true));
+        assert_eq!(std::fs::read_to_string(victim.join("f")).unwrap(), "VICTIM");
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 1);
+    }
+
     use super::*;
 
     /// Ok 场景：`agent/persona.md` 的父目录 `agent/` 在 tempdir 里尚不存在，

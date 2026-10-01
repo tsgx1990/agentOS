@@ -1656,26 +1656,19 @@ fn preview_extra_args(sandboxed: bool) -> Vec<String> {
 /// 20s 的选择：与本文件其它手工里程碑测试（`tests/real_pi_bash_escape_it.rs`）
 /// 给真实 pi 的超时预算一致；`mock_pi` 场景下这个超时几乎不可能被触及
 /// （canned 事件流是同步、立即写出的）。
-pub async fn spawn_preview_session(staging_dir: &Path) -> Result<(), String> {
+pub async fn spawn_preview_session(layout: &DataLayout, draft_id: &str) -> Result<(), String> {
     use crate::rpc::PiEvent;
 
     let sandboxed = sandboxing_available();
-    // 沙盒要求可写路径「规范化后等于自身」（见 `sandbox::build_profile`）：暂存目录由宿主刚
-    // 建好、此刻应用代码尚未运行，在这里规范化一次，之后全程用这个字面路径。
-    let staging_dir_canon =
-        std::fs::canonicalize(staging_dir).map_err(|e| format!("预览暂存目录无法规范化：{e}"))?;
-    let staging_dir = staging_dir_canon.as_path();
-    let agent_home = staging_dir.join(PREVIEW_AGENT_HOME_SUBDIR);
-    let preview_session_dir = staging_dir.join(PREVIEW_SESSION_SUBDIR);
-
-    if let Err(e) = std::fs::create_dir_all(&agent_home) {
-        cleanup_preview_scratch_dirs(staging_dir);
-        return Err(format!("创建预览 agent home 目录失败：{e}"));
-    }
-    if let Err(e) = std::fs::create_dir_all(&preview_session_dir) {
-        cleanup_preview_scratch_dirs(staging_dir);
-        return Err(format!("创建预览 session 目录失败：{e}"));
-    }
+    // 沙盒要求可写路径「规范化后等于自身」（见 `sandbox::build_profile`）。暂存目录及其两个
+    // 子目录对（上一次预览里的）草稿应用可写，应用可以把它们换成链接，所以**不**对路径先规范化
+    // 再用（那会把链接目标授权成可写根）：与 `private_dir` 同一套校验——真目录、非链接、
+    // 规范化等于由已规范化数据根按字面推出的预期路径，不满足就拒绝。
+    let staging_dir_buf = layout.checked_maker_staging_dir(draft_id)?;
+    let staging_dir = staging_dir_buf.as_path();
+    let agent_home = crate::paths::ensure_real_dir(&staging_dir.join(PREVIEW_AGENT_HOME_SUBDIR))?;
+    let preview_session_dir =
+        crate::paths::ensure_real_dir(&staging_dir.join(PREVIEW_SESSION_SUBDIR))?;
 
     let env = vec![(
         "PI_CODING_AGENT_DIR".to_string(),
@@ -2577,6 +2570,33 @@ mod tests {
         let settings = serde_json::json!({"packages": []});
         let models = serde_json::json!({"providers": {}});
         assert!(write_agent_home(&layout, "a", &settings, Some(&models)).is_err());
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
+    }
+
+
+    /// I-b：暂存目录（或其 agent home / session 子目录）被换成指向受害目录的链接后发起预览
+    /// → 拒绝、受害目录无写入。校验发生在拉起子进程之前，不需要真实 pi。
+    #[tokio::test]
+    async fn preview_rejects_symlinked_staging_and_subdirs_ib() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        // 1) 草稿暂存目录本身是链接
+        std::fs::create_dir_all(tmp.path().join("maker-staging")).unwrap();
+        std::os::unix::fs::symlink(&victim, tmp.path().join("maker-staging/d1")).unwrap();
+        assert!(spawn_preview_session(&layout, "d1").await.is_err());
+        // 2) agent home / session 子目录是链接
+        for sub in [PREVIEW_AGENT_HOME_SUBDIR, PREVIEW_SESSION_SUBDIR] {
+            let st = layout.checked_maker_staging_dir("d2").unwrap();
+            for other in [PREVIEW_AGENT_HOME_SUBDIR, PREVIEW_SESSION_SUBDIR] {
+                let _ = std::fs::remove_file(st.join(other));
+                let _ = std::fs::remove_dir_all(st.join(other));
+            }
+            std::os::unix::fs::symlink(&victim, st.join(sub)).unwrap();
+            let e = spawn_preview_session(&layout, "d2").await.unwrap_err();
+            assert!(e.contains("符号链接") || e.contains("真实目录"), "{e}");
+        }
         assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
     }
 

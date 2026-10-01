@@ -190,37 +190,28 @@ impl DataLayout {
             std::fs::canonicalize(&self.root).map_err(|e| format!("无法规范化数据根：{e}"))?;
         let parent = root.join(kind);
         std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
-        let expected = parent.join(app_id);
-        let not_real = |what: &str| {
-            format!(
-                "私有目录不是真实目录（{what}，可能被替换成了符号链接或文件），拒绝使用：{}",
-                expected.display()
-            )
-        };
-        match std::fs::symlink_metadata(&expected) {
-            Ok(m) if m.file_type().is_dir() => {}
-            Ok(m) if m.file_type().is_symlink() => return Err(not_real("符号链接")),
-            Ok(_) => return Err(not_real("非目录")),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                match std::fs::create_dir(&expected) {
-                    Ok(()) => {}
-                    // 并发创建：再确认一次它是真目录。
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                        let m = std::fs::symlink_metadata(&expected).map_err(|e| e.to_string())?;
-                        if !m.file_type().is_dir() {
-                            return Err(not_real("非真实目录"));
-                        }
-                    }
-                    Err(e) => return Err(e.to_string()),
-                }
-            }
-            Err(e) => return Err(e.to_string()),
+        ensure_real_dir(&parent.join(app_id))
+    }
+
+    /// 某草稿的 maker 暂存目录（已校验版）：`<canonical(root)>/maker-staging/<draft_id>`。
+    ///
+    /// 草稿目录在预览会话里对草稿应用可写（同一草稿可反复预览），应用可以把它改名后换成
+    /// 链接。宿主对它写文件（`stage_write`）或把它授权给预览沙盒前，都经这里取路径：
+    /// 与 `private_dir` 同一套规则（真目录、不是链接、规范化等于由已规范化数据根按字面推出的
+    /// 预期路径），**不对应用可控的路径做规范化后再用**。`draft_id` 须是单一安全路径段。
+    pub fn checked_maker_staging_dir(&self, draft_id: &str) -> Result<PathBuf, String> {
+        if draft_id.is_empty()
+            || draft_id == "."
+            || draft_id == ".."
+            || draft_id.contains(['/', '\\', '\0'])
+        {
+            return Err(format!("非法的 draft_id：{draft_id:?}"));
         }
-        let canon = std::fs::canonicalize(&expected).map_err(|e| e.to_string())?;
-        if canon != expected {
-            return Err(not_real("规范化后路径不一致"));
-        }
-        Ok(expected)
+        std::fs::create_dir_all(&self.root).map_err(|e| format!("无法创建数据根：{e}"))?;
+        let root =
+            std::fs::canonicalize(&self.root).map_err(|e| format!("无法规范化数据根：{e}"))?;
+        let staging_root = ensure_real_dir(&root.join("maker-staging"))?;
+        ensure_real_dir(&staging_root.join(draft_id))
     }
 
     /// 创建应用程序所需的目录结构
@@ -235,6 +226,42 @@ impl DataLayout {
         }
         Ok(())
     }
+}
+
+/// 确认 `expected`（调用方按字面拼出的预期路径，其父目录已是规范化的真目录）是一个真目录：
+/// 已存在但是符号链接 / 非目录 → Err（绝不跟随）；不存在才创建（单层 `create_dir`）；
+/// 最后确认 `canonicalize == expected`。成功返回 `expected`。
+pub fn ensure_real_dir(expected: &std::path::Path) -> Result<PathBuf, String> {
+    let not_real = |what: &str| {
+        format!(
+            "目录不是真实目录（{what}，可能被替换成了符号链接或文件），拒绝使用：{}",
+            expected.display()
+        )
+    };
+    match std::fs::symlink_metadata(expected) {
+        Ok(m) if m.file_type().is_dir() => {}
+        Ok(m) if m.file_type().is_symlink() => return Err(not_real("符号链接")),
+        Ok(_) => return Err(not_real("非目录")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::create_dir(expected) {
+                Ok(()) => {}
+                // 并发创建：再确认一次它是真目录。
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let m = std::fs::symlink_metadata(expected).map_err(|e| e.to_string())?;
+                    if !m.file_type().is_dir() {
+                        return Err(not_real("非真实目录"));
+                    }
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Err(e) => return Err(e.to_string()),
+    }
+    let canon = std::fs::canonicalize(expected).map_err(|e| e.to_string())?;
+    if canon != expected {
+        return Err(not_real("规范化后路径不一致"));
+    }
+    Ok(expected.to_path_buf())
 }
 
 #[cfg(test)]
@@ -415,6 +442,50 @@ mod tests {
         let staging_dir = l.maker_staging_dir("draft-abc");
         // The staging_dir should be staging_root joined with the draft_id
         assert_eq!(staging_dir, staging_root.join("draft-abc"));
+    }
+
+    // --- checked_maker_staging_dir（I-b） -----------------------------------
+
+    #[test]
+    fn checked_maker_staging_dir_returns_canonical_literal_and_creates() {
+        let tmp = tempdir().unwrap();
+        let l = DataLayout::new(tmp.path().to_path_buf());
+        let p = l.checked_maker_staging_dir("draft-1").unwrap();
+        assert!(p.is_dir());
+        assert_eq!(std::fs::canonicalize(&p).unwrap(), p);
+        assert!(p.ends_with("maker-staging/draft-1"));
+        assert!(l.checked_maker_staging_dir("draft-1").is_ok()); // 幂等
+    }
+
+    #[test]
+    fn checked_maker_staging_dir_rejects_symlinked_draft_and_root() {
+        let tmp = tempdir().unwrap();
+        let l = DataLayout::new(tmp.path().to_path_buf());
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::create_dir_all(tmp.path().join("maker-staging")).unwrap();
+        std::os::unix::fs::symlink(&victim, tmp.path().join("maker-staging/d")).unwrap();
+        let e = l.checked_maker_staging_dir("d").unwrap_err();
+        assert!(e.contains("符号链接"), "{e}");
+        // maker-staging 根本身被换成链接
+        std::fs::remove_dir_all(tmp.path().join("maker-staging")).unwrap();
+        std::os::unix::fs::symlink(&victim, tmp.path().join("maker-staging")).unwrap();
+        assert!(l.checked_maker_staging_dir("d2").is_err());
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn ensure_real_dir_rejects_symlink_file_and_creates_missing() {
+        let tmp = tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::os::unix::fs::symlink(&victim, root.join("l")).unwrap();
+        assert!(ensure_real_dir(&root.join("l")).is_err());
+        std::fs::write(root.join("f"), b"x").unwrap();
+        assert!(ensure_real_dir(&root.join("f")).is_err());
+        assert_eq!(ensure_real_dir(&root.join("new")).unwrap(), root.join("new"));
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
     }
 
     // --- private_dir（C1 宿主侧收口） ---------------------------------------
