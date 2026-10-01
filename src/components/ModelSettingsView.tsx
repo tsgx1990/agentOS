@@ -465,7 +465,6 @@ export function ModelSettingsView(p: ModelSettingsViewProps) {
                         <>
                           <span className="ms-eff">
                             <span className="ms-eff-provider">{nameOf(a.effective.provider)}</span>
-                            <span className={`ms-eff-sep${nameOf(a.effective.provider).endsWith("）") ? " ms-eff-sep-tight" : ""}`}>/</span>
                             <code>{a.effective.model}</code>
                           </span>{" "}
                           <span className={`ms-src ms-src-${a.effective.source}`}>{SOURCE_LABEL[a.effective.source]}</span>
