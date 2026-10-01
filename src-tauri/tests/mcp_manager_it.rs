@@ -1218,6 +1218,28 @@ async fn rule_hit_executes_and_audits_verdict_rule() {
     assert_eq!(staged[0].tool, "write_file");
 }
 
+#[tokio::test]
+async fn server_pids_lists_every_connected_server() {
+    let manager = McpManager::new();
+    let a = mock_server_config("mock-pids-a");
+    let b = mock_server_config("mock-pids-b");
+    manager.ensure_server(&a).await.expect("a 应连上");
+    manager.ensure_server(&b).await.expect("b 应连上");
+
+    let pids = manager.server_pids();
+    assert_eq!(pids.len(), 2);
+    assert_eq!(pids[0].0, "mock-pids-a");
+    assert_eq!(pids[1].0, "mock-pids-b");
+    assert_eq!(Some(pids[0].1), manager.server_pid("mock-pids-a"));
+    assert_eq!(Some(pids[1].1), manager.server_pid("mock-pids-b"));
+
+    manager.disconnect("mock-pids-a").await;
+    let pids = manager.server_pids();
+    assert_eq!(pids.len(), 1);
+    assert_eq!(pids[0].0, "mock-pids-b");
+    manager.disconnect("mock-pids-b").await;
+}
+
 // ---------------------------------------------------------------------------
 // 终审 Important 2：McpManager::disconnect —— 从连接池移除 + kill 子进程，
 // 幂等；之后 authorized_tools/server_tools/call_tool 都不应再看到这个 server。

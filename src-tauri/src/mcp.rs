@@ -310,6 +310,19 @@ impl McpManager {
             .and_then(|c| c.pid)
     }
 
+    /// 全部已连接 server 的 `(id, pid)`，按 id 排序；pid 未知的跳过（资源面板用）。
+    pub fn server_pids(&self) -> Vec<(String, u32)> {
+        let mut v: Vec<(String, u32)> = self
+            .conns
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(id, c)| c.pid.map(|p| (id.clone(), p)))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
     /// 确保 `cfg.id` 对应的 server 已连接：已连接（HashMap 命中）→ 直接返回
     /// `Ok(())`，不重新 spawn（connect-once/全局复用）；否则 spawn 子进程
     /// （`cfg.command`/`cfg.args`/`cfg.env`，`tokio::process::Command`），走

@@ -54,6 +54,8 @@ pub struct AppState {
     /// 指针）传给每个前台监听器，确保同一进程内所有 app 的限速窗口互相隔离
     /// （按 app_id 分桶，见该能力实现）但共享同一份注册表实例本身。
     pub capabilities: std::sync::Arc<crate::capability::CapabilityRegistry>,
+    /// P6-F：每应用的打开时刻 / 最近活动 / 回合状态 / 休眠集合（空闲回收与资源面板用）。
+    pub activity: crate::idle::ActivityTracker,
 }
 
 // 手写 Default：SlotPool/ConcurrencyGate 需要带参数构造（容量/上限），
@@ -69,6 +71,7 @@ impl Default for AppState {
             gate: Mutex::new(ConcurrencyGate::new(MAX_CONCURRENT_AGENTS)),
             usage: UsageAccumulator::new(),
             capabilities: std::sync::Arc::new(crate::capabilities::builtin()),
+            activity: crate::idle::ActivityTracker::default(),
         }
     }
 }

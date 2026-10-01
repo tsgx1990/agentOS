@@ -825,6 +825,7 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
         .lock()
         .await
         .insert(app_id.clone(), session);
+    state.activity.on_open(&app_id, crate::idle::now_secs());
 
     // Task13：应用打开后台触发一次错过任务补跑（P3 §10）——只补这一个刚打开
     // 的 app 的任务（`run_catch_up_for_app` 内部按 app_id 过滤），其余 app 此刻
@@ -873,11 +874,18 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
         let mut rx = rx;
         loop {
             while let Some(ev) = rx.recv().await {
+                // P6-F：任何事件都算活动（不依赖变体，新增变体自动覆盖）。
+                app.state::<crate::app_state::AppState>()
+                    .activity
+                    .touch(&id, crate::idle::now_secs());
                 match ev {
                     PiEvent::AssistantDelta(d) => {
                         let _ = app.emit(&format!("assistant-delta:{id}"), d);
                     }
                     PiEvent::AgentEnded => {
+                        app.state::<crate::app_state::AppState>()
+                            .activity
+                            .end_turn(&id, crate::idle::now_secs());
                         let _ = app.emit(&format!("assistant-done:{id}"), ());
                         // P3 Task18 修复：每轮结束后查一次该 app 会话的累计用量
                         // （`PiEvent::SessionStats` 分支据此更新 `usage`）。fire-and-forget——
@@ -1036,6 +1044,9 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
                                 .lock()
                                 .await
                                 .insert(id.clone(), s);
+                            app.state::<crate::app_state::AppState>()
+                                .activity
+                                .on_restart(&id, crate::idle::now_secs());
                             rx = new_rx;
                             backoff.reset();
                         }
@@ -1066,23 +1077,32 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
 /// 避免像 `if let Some(mut s) = state.app_sessions.lock().await.remove(&app_id) { s.kill().await; }`
 /// 那样把整个 if-let 语句块的作用域内都持有 MutexGuard（Rust 的 if-let 场景值临时对象
 /// 生命周期会延伸到整个语句块），从而在 kill 期间不必要地阻塞其他任务对 app_sessions 的加锁。
-pub async fn close_app(app: tauri::AppHandle, app_id: String) -> Result<(), String> {
-    let state = app.state::<crate::app_state::AppState>();
-    let removed = state.app_sessions.lock().await.remove(&app_id);
+pub async fn close_app_in(state: &crate::app_state::AppState, app_id: &str) -> bool {
+    let removed = state.app_sessions.lock().await.remove(app_id);
     if let Some(mut s) = removed {
         s.kill().await;
         // Task9b：该 app 若有 MCP socket 监听器在跑，一并停掉（中止 accept 循环 +
         // 删 socket 文件）——同 app_sessions 的 per-app 资源生命周期模式，放在
         // Some 分支里同样是为了"只对确实关掉了一个存活会话的 app_id 做清理"。
-        if let Some(listener) = state.mcp_sockets.lock().await.remove(&app_id) {
+        if let Some(listener) = state.mcp_sockets.lock().await.remove(app_id) {
             listener.stop().await;
         }
         // slots.release_app 本身是无副作用的扫描型 no-op（该 app_id 未占槽位时安全），
         // 放进 Some 分支只是为了和 gate.release() 保持对称：两者都只应在“确实移除到
         // 了一个会话”时才发生，避免对一个根本没打开过的 app_id 释放别人的名额。
-        state.slots.lock().unwrap().release_app(&app_id);
+        state.slots.lock().unwrap().release_app(app_id);
         state.gate.lock().await.release();
+        state.activity.on_close(app_id);
+        true
+    } else {
+        false
     }
+}
+
+/// 关闭应用会话（命令入口）：`close_app_in` 的薄封装，一切关闭（含空闲回收）都走它。
+pub async fn close_app(app: tauri::AppHandle, app_id: String) -> Result<(), String> {
+    let state = app.state::<crate::app_state::AppState>();
+    close_app_in(&state, &app_id).await;
     Ok(())
 }
 
@@ -1103,7 +1123,13 @@ pub async fn steer_app_session(
 ) -> bool {
     let guard = state.app_sessions.lock().await;
     match guard.get(app_id) {
-        Some(session) => session.send_steer(text).await.is_ok(),
+        Some(session) => {
+            let ok = session.send_steer(text).await.is_ok();
+            if ok {
+                state.activity.touch(app_id, crate::idle::now_secs());
+            }
+            ok
+        }
         None => false,
     }
 }
@@ -1111,6 +1137,57 @@ pub async fn steer_app_session(
 // ---------------------------------------------------------------------------
 // Task12：headless task-mode 会话——定时任务到点后台拉起
 // ---------------------------------------------------------------------------
+
+/// 一个正在运行的后台（headless）会话：定时任务或被调方会话。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeadlessSession {
+    pub app_id: String,
+    pub pid: Option<u32>,
+}
+
+static HEADLESS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u64, HeadlessSession>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static HEADLESS_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// RAII 登记：构造时写入登记表，Drop 时移除。`run_headless_session` 是定时任务与
+/// 被调方会话的唯一生产点，登记放在这里（进程级静态表，`spawn_call_session` 签名不动）。
+pub(crate) struct HeadlessGuard(u64);
+
+impl HeadlessGuard {
+    pub(crate) fn register(app_id: &str, pid: Option<u32>) -> Self {
+        let id = HEADLESS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        HEADLESS.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            id,
+            HeadlessSession {
+                app_id: app_id.to_string(),
+                pid,
+            },
+        );
+        Self(id)
+    }
+}
+
+impl Drop for HeadlessGuard {
+    fn drop(&mut self) {
+        HEADLESS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// 当前正在运行的后台会话（按 app_id、pid 排序）。
+pub fn running_headless_sessions() -> Vec<HeadlessSession> {
+    let mut v: Vec<HeadlessSession> = HEADLESS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .cloned()
+        .collect();
+    v.sort_by(|a, b| (&a.app_id, a.pid).cmp(&(&b.app_id, b.pid)));
+    v
+}
 
 /// `spawn_task_session` 的产出：headless task-mode 会话跑到 `agent_end` 后的
 /// 结果——拼接的最终助手文本 + 这次会话过程中是否出现过供应商侧错误。
@@ -1405,6 +1482,10 @@ async fn run_headless_session(
         plan.sandbox_write,
     )
     .await?;
+
+    // P6-F：登记为后台会话，活到函数返回（覆盖 `?` 提前返回与正常 kill 收尾）。
+    // 必须具名绑定——`let _ =` 会当场 drop。
+    let _headless = HeadlessGuard::register(&app.app_id, session.child_id());
 
     session.send_prompt(prompt).await?;
 
@@ -1745,6 +1826,20 @@ mod tests {
     use crate::paths::DataLayout;
     use crate::registry::InstalledApp;
     use std::path::Path;
+
+    #[test]
+    fn headless_guard_registers_until_drop() {
+        let id = "t-headless-guard";
+        let guard = HeadlessGuard::register(id, Some(4242));
+        let found: Vec<_> = running_headless_sessions()
+            .into_iter()
+            .filter(|h| h.app_id == id)
+            .collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pid, Some(4242));
+        drop(guard);
+        assert!(running_headless_sessions().iter().all(|h| h.app_id != id));
+    }
 
     fn app(id: &str, trusted: bool) -> InstalledApp {
         InstalledApp {

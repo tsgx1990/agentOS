@@ -6,6 +6,7 @@ pub mod call_bus;
 pub mod capabilities;
 pub mod capability;
 pub mod dirfd;
+pub mod idle;
 pub mod install;
 pub mod jsonl;
 pub mod maker;
@@ -64,11 +65,16 @@ async fn close_app(app: tauri::AppHandle, app_id: String) -> Result<(), String> 
 async fn app_prompt(app: tauri::AppHandle, app_id: String, text: String) -> Result<(), String> {
     let state = app.state::<AppState>();
     let guard = state.app_sessions.lock().await;
-    guard
-        .get(&app_id)
-        .ok_or("应用会话未就绪")?
-        .send_prompt(&text)
-        .await
+    let session = guard.get(&app_id).ok_or("应用会话未就绪")?;
+    // P6-F：先 begin_turn 再 send_prompt——pi 可能在 send_prompt 返回前就回 agent_end，
+    // 后置会让 in_turn 永久卡在 true。发送失败则回滚。
+    let now = idle::now_secs();
+    state.activity.begin_turn(&app_id, now);
+    let res = session.send_prompt(&text).await;
+    if res.is_err() {
+        state.activity.end_turn(&app_id, idle::now_secs());
+    }
+    res
 }
 
 /// P1：把结构化指令（`window.superagent.command(name, params)`）格式化为一句
