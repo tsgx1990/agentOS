@@ -16,6 +16,7 @@ pub mod paths;
 pub mod permissions;
 pub mod pi_bin;
 pub mod pkg;
+pub mod providers;
 pub mod publish;
 pub mod registry;
 pub mod rpc;
@@ -1505,6 +1506,7 @@ pub fn run() {
             secrets::set_api_key,
             secrets::has_api_key,
             secrets::clear_api_key,
+            providers::list_providers,
             send_prompt,
             restart_session,
             open_app,
