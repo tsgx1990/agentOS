@@ -113,6 +113,17 @@ fn installed(id: &str, trusted: bool) -> InstalledApp {
     }
 }
 
+/// 能力插件会经 `-e` 加载的 hosttools 文件（含 `build_launch` 固定加的 permission_gate.ts）。
+const BRIDGES: [(&str, &str); 7] = [
+    ("permission_gate.ts", "GATE-LOADED-MARKER"),
+    ("call_agent_bridge.ts", "BRIDGE-call_agent-LOADED"),
+    ("maker_bridge.ts", "BRIDGE-maker-LOADED"),
+    ("mcp_bridge.ts", "BRIDGE-mcp-LOADED"),
+    ("router_bridge.ts", "BRIDGE-router-LOADED"),
+    ("notify_bridge.ts", "BRIDGE-notify-LOADED"),
+    ("ui_emit.ts", "BRIDGE-ui_emit-LOADED"),
+];
+
 struct Outcome {
     status: std::process::ExitStatus,
     stdout: String,
@@ -167,11 +178,29 @@ fn run_sandboxed_turn(root: &Path, trusted: bool, base_url: &str) -> Outcome {
                        "ui": "ui/index.html", "permissions": "permissions.json"}
     }))
     .unwrap();
-    let hosttools = Path::new(env!("CARGO_MANIFEST_DIR")).join("hosttools");
+    // 假的 hosttools 目录（与真实安装一样不在沙盒基础白名单里）：每个扩展加载时
+    // 往 stderr 打一个标记，用来证明沙盒里的 pi 真的读到并加载了它们。
+    let hosttools = root.join("hosttools");
+    std::fs::create_dir_all(&hosttools).unwrap();
+    for (file, marker) in BRIDGES {
+        std::fs::write(
+            hosttools.join(file),
+            format!("console.error(\"{marker}\");\nexport default function (pi: any) {{}}\n"),
+        )
+        .unwrap();
+    }
+    let contribution = LaunchContribution {
+        bridges: BRIDGES
+            .iter()
+            .map(|(f, _)| *f)
+            .filter(|f| *f != "permission_gate.ts")
+            .collect(),
+        ..Default::default()
+    };
     let plan: LaunchPlan = assemble_launch_plan(
         &app,
         &manifest,
-        &LaunchContribution::default(),
+        &contribution,
         &layout,
         &hosttools,
         true,
@@ -265,6 +294,19 @@ fn trusted_sandboxed_app_runs_full_turn_with_custom_provider() {
         "应带插值后的密钥：{}",
         heads[0]
     );
+    assert!(
+        !o.stderr
+            .contains("Could not read append system prompt file"),
+        "应用包里的 persona.md 应可读：{}",
+        o.stderr
+    );
+    for (_, marker) in BRIDGES {
+        assert!(
+            o.stderr.contains(marker),
+            "hosttools 扩展 {marker} 应在沙盒里被加载（读不到时 pi 静默跳过）：{}",
+            o.stderr
+        );
+    }
     let sessions = dir_files(&o.layout.session_dir("a"));
     println!("会话目录下的文件：{sessions:?}");
     assert!(
@@ -288,8 +330,8 @@ fn untrusted_sandboxed_app_starts_but_model_request_is_network_denied() {
     );
     let all = format!("{}{}", o.stdout, o.stderr);
     // 只盯本修复相关的两个目录：agent home / 会话目录上的 EPERM 不应再出现。
-    // （stderr 里另有两类与本修复无关的 EPERM 警告——向上查找 CLAUDE.md 上下文文件、
-    // 读应用包里的 persona.md——它们是 pi 的非致命警告，见 docs/known-limitations.md。）
+    // （stderr 里仍有向上查找 CLAUDE.md 上下文文件的 EPERM 警告：cwd 祖先目录本就不放行，
+    // 是 pi 的非致命警告。）
     let bad: Vec<&str> = all
         .lines()
         .filter(|l| l.contains("EPERM") && (l.contains("/agenthome/") || l.contains("/sessions/")))

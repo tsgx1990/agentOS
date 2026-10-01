@@ -107,6 +107,7 @@ pub fn build_settings_json(
 ///   是该应用私有的（路径按 app_id 隔离，不含数据根与其它应用的目录）；宿主每次拉起前都会
 ///   重写 `settings.json`/`models.json`，应用篡改它们只影响它自己、越不出沙盒；`models.json`
 ///   里只有 `${VAR}` 引用，没有密钥字面值。`assemble_launch_plan` 合并能力贡献时保留这两项。
+/// - **沙盒只读基座**：`sandbox_read` 恒含该应用的 `packages_dir` 与 `hosttools_dir`，理由见函数体内注释。
 pub fn build_launch(app: &InstalledApp, layout: &DataLayout, hosttools_dir: &Path) -> LaunchPlan {
     let pkg = layout.packages_dir(&app.app_id);
     let s = |p: PathBuf| p.to_string_lossy().to_string();
@@ -132,7 +133,12 @@ pub fn build_launch(app: &InstalledApp, layout: &DataLayout, hosttools_dir: &Pat
     LaunchPlan {
         extra_args,
         env,
-        sandbox_read: vec![],
+        // 只读基座：该应用自己的包目录（persona.md 等，应用自己的只读内容）与宿主的
+        // hosttools 目录（`-e` 加载的权限闸/各能力桥，宿主自己的公开扩展代码）。
+        // 它们都不在 `$APP_DATA` 里；不放行时 pi 读不到 persona（只警告），`-e` 扩展
+        // 则被静默跳过——沙盒应用里权限闸与全部桥悄悄缺席。只读放行不越权：不含数据根与
+        // 其它应用的目录。
+        sandbox_read: vec![pkg.clone(), hosttools_dir.to_path_buf()],
         // 该应用自己的 agent home 与会话目录（见函数文档「沙盒可写基座」）。
         sandbox_write: vec![
             layout.agent_home_dir(&app.app_id),
@@ -160,7 +166,7 @@ pub fn build_launch(app: &InstalledApp, layout: &DataLayout, hosttools_dir: &Pat
 ///   + `contribution.extra_args`
 ///   + 对每个 `contribution.bridges` 追加一对 `["-e", hosttools_dir/<桥文件>]`；
 /// - `env` = `build_launch.env` + `contribution.env`；
-/// - `sandbox_read`/`sandbox_write` = `build_launch` 基座（该应用自己的 agent home 与会话目录）
+/// - `sandbox_read`/`sandbox_write` = `build_launch` 基座（只读：应用包目录 + hosttools；可写：该应用自己的 agent home 与会话目录）
 ///   ∪ `contribution.sandbox_read`/`sandbox_write`，去重保序（当前唯一贡献者是 `filesystem`
 ///   能力，见其 `launch` 实现）。
 pub fn assemble_launch_plan(
@@ -1861,7 +1867,16 @@ mod tests {
             assert!(!p.ends_with("b"), "{p:?}");
             assert!(!p.starts_with("/data/apps"), "{p:?}");
         }
-        assert!(plan.sandbox_read.is_empty());
+        // 只读基座恰为该应用自己的包目录与 hosttools，不含数据根或其它应用目录。
+        assert_eq!(
+            plan.sandbox_read,
+            vec![layout.packages_dir("a"), PathBuf::from("/ht")]
+        );
+        for p in &plan.sandbox_read {
+            assert_ne!(p, Path::new("/data"));
+            assert!(!p.ends_with("b"), "{p:?}");
+            assert!(!p.starts_with("/data/apps"), "{p:?}");
+        }
     }
 
     #[test]
@@ -1886,7 +1901,14 @@ mod tests {
             plan.sandbox_write,
             vec![layout.agent_home_dir("a"), layout.session_dir("a"), extra]
         );
-        assert_eq!(plan.sandbox_read, vec![PathBuf::from("/r")]);
+        assert_eq!(
+            plan.sandbox_read,
+            vec![
+                layout.packages_dir("a"),
+                PathBuf::from("/ht"),
+                PathBuf::from("/r")
+            ]
+        );
     }
 
     #[test]
