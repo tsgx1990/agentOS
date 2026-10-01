@@ -223,6 +223,16 @@ fn resolve_model_launch(
     app_id: &str,
     manifest: &crate::pkg::Manifest,
 ) -> Result<ModelLaunch, String> {
+    resolve_model_launch_with(layout, app_id, manifest, crate::secrets::read_key)
+}
+
+/// `resolve_model_launch` 的可注入钥匙串版本（测试用）。
+fn resolve_model_launch_with(
+    layout: &DataLayout,
+    app_id: &str,
+    manifest: &crate::pkg::Manifest,
+    lookup_key: impl Fn(&str) -> Option<String>,
+) -> Result<ModelLaunch, String> {
     let custom = crate::providers::ProvidersStore::new(layout.providers_path()).list()?;
     let overrides =
         crate::model_overrides::OverridesStore::new(layout.model_overrides_path()).load()?;
@@ -233,10 +243,7 @@ fn resolve_model_launch(
         |id| crate::providers::is_known(id, &custom),
     );
     Ok(crate::model_overrides::model_launch(
-        &eff,
-        &custom,
-        crate::secrets::read_key,
-        true,
+        &eff, &custom, lookup_key, true,
     ))
 }
 
@@ -2019,6 +2026,47 @@ mod tests {
             .extra_args
             .iter()
             .any(|a| a == "--model" || a == "--provider"));
+    }
+
+    #[test]
+    fn resolve_model_launch_reads_files_end_to_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        std::fs::write(
+            layout.providers_path(),
+            serde_json::json!({"version": 1, "custom": [{
+                "id": "custom-mock", "display": "Mock",
+                "base_url": "http://127.0.0.1:9/v1",
+                "api": "openai-completions", "models": ["m1"]
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            layout.model_overrides_path(),
+            serde_json::json!({"version": 1, "global": null,
+                "apps": {"a": {"provider": "custom-mock", "model": "m1"}}})
+            .to_string(),
+        )
+        .unwrap();
+        let key = |_: &str| Some("sk-test-fake".to_string());
+        let ml = resolve_model_launch_with(&layout, "a", &manifest_min(), key).unwrap();
+        assert_eq!(ml.args, ["--provider", "custom-mock", "--model", "m1"]);
+        assert!(ml
+            .env
+            .iter()
+            .any(|(k, v)| k == "SUPERAGENT_KEY_CUSTOM_MOCK" && v == "sk-test-fake"));
+        assert!(ml.models_json.is_some());
+        // 另一个没有覆盖的应用：清单无 model 且无全局默认 -> 无参数。
+        let ml = resolve_model_launch_with(&layout, "b", &manifest_min(), key).unwrap();
+        assert!(ml.args.is_empty());
+        // 损坏的文件报错并带上修复指引。
+        std::fs::write(layout.model_overrides_path(), "{ bad").unwrap();
+        let e = resolve_model_launch_with(&layout, "a", &manifest_min(), key).unwrap_err();
+        assert!(
+            e.contains("model-overrides.json") && e.contains("修复或删除"),
+            "{e}"
+        );
     }
 
     #[test]

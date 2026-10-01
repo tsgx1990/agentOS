@@ -169,6 +169,15 @@ pub fn uninstall_fs(
         residue.push(format!("registry: {e}"));
     }
 
+    // 删除该应用在 model-overrides.json 里的模型覆盖；文件不存在则无事可做（不创建它）。
+    let overrides = layout.model_overrides_path();
+    if overrides.exists() {
+        if let Err(e) = crate::model_overrides::OverridesStore::new(overrides).set_app(app_id, None)
+        {
+            residue.push(format!("model-overrides: {e}"));
+        }
+    }
+
     // 装卸钩子（P6-A）：能力注册表按 app_id 跑一遍 `on_uninstall`（不看清单——app_id
     // 已从 registry 摘除，清单是否仍能读到不重要，各能力自己决定要不要清理）。目前
     // 唯一有实际副作用的是 `system.schedule`（`TaskRegistry::deregister_app`，即
@@ -496,6 +505,35 @@ mod tests {
         // 持久化：全新 ApprovalStore 指向同一目录重新读盘，仍然确认已清空。
         let fresh = crate::approvals::ApprovalStore::new(layout.clone());
         assert!(fresh.list_rules(Some(id)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn uninstall_removes_the_apps_model_override_only() {
+        use crate::model_overrides::{ModelChoice, OverridesStore};
+        let root = tempdir().unwrap();
+        let src = tempdir().unwrap();
+        make_pkg(src.path());
+        let layout = DataLayout::new(root.path().to_path_buf());
+        let reg = RegistryStore::new(layout.registry_path());
+        install_from_dir(src.path(), &layout, &reg, true).unwrap();
+        let id = "superagent__todo-notes";
+        let choice = || {
+            Some(ModelChoice {
+                provider: "deepseek".into(),
+                model: "m".into(),
+            })
+        };
+        let store = OverridesStore::new(layout.model_overrides_path());
+        // 文件不存在时卸载不报错、也不凭空创建它。
+        uninstall_fs(id, &layout, &reg, false).unwrap();
+        assert!(!layout.model_overrides_path().exists());
+        install_from_dir(src.path(), &layout, &reg, true).unwrap();
+        store.set_app(id, choice()).unwrap();
+        store.set_app("other-app", choice()).unwrap();
+        uninstall_fs(id, &layout, &reg, false).unwrap();
+        let f = store.load().unwrap();
+        assert!(!f.apps.contains_key(id));
+        assert!(f.apps.contains_key("other-app"));
     }
 
     #[test]

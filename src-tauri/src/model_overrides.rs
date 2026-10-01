@@ -17,8 +17,11 @@ pub struct ModelChoice {
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OverridesFile {
+    #[serde(default)]
     pub version: u32,
+    #[serde(default)]
     pub global: Option<ModelChoice>,
+    #[serde(default)]
     pub apps: BTreeMap<String, ModelChoice>,
 }
 
@@ -34,10 +37,17 @@ impl OverridesStore {
     /// 文件不存在 -> 默认值；存在但读取/解析失败 -> Err（不静默当空，避免随后的写入覆盖掉用户选择）。
     pub fn load(&self) -> Result<OverridesFile, String> {
         match std::fs::read_to_string(&self.path) {
-            Ok(s) => serde_json::from_str(&s)
-                .map_err(|e| format!("{} 解析失败：{e}", self.path.display())),
+            Ok(s) => serde_json::from_str(&s).map_err(|e| {
+                format!(
+                    "{} 解析失败：{e}（请修复或删除该文件）",
+                    self.path.display()
+                )
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(OverridesFile::default()),
-            Err(e) => Err(format!("{} 读取失败：{e}", self.path.display())),
+            Err(e) => Err(format!(
+                "{} 读取失败：{e}（请修复或删除该文件）",
+                self.path.display()
+            )),
         }
     }
 
@@ -154,6 +164,23 @@ pub fn model_launch(
         .provider
         .as_deref()
         .filter(|p| providers::is_known(p, custom));
+    if let Some(p) = selected {
+        if providers::native(p).is_none() && !allow_custom {
+            // 主会话没有私有 agent home，写不了 models.json，自定义 provider 在此无法使用：
+            // 按「provider 未知」处理，仍注入全部已配置的原生 key，主助手不至于完全不可用。
+            eprintln!("主会话不支持自定义 provider {p}，忽略该选择，注入全部已配置的原生密钥");
+            return model_launch(
+                &EffectiveModel {
+                    provider: None,
+                    model: None,
+                    source: ModelSource::None,
+                },
+                custom,
+                lookup_key,
+                false,
+            );
+        }
+    }
     let mut out = ModelLaunch::default();
     match (selected, eff.model.as_deref()) {
         (Some(p), Some(m)) => {
@@ -164,20 +191,17 @@ pub fn model_launch(
     }
     match selected {
         Some(p) => {
-            if providers::native(p).is_none() && !allow_custom {
-                // 主会话没有私有 agent home，写不了 models.json：自定义 provider 在此无法使用。
-                eprintln!("主会话不支持自定义 provider {p}，忽略该选择，沿用 pi 默认行为");
-                return ModelLaunch::default();
-            }
             // 只注入所选 provider 的 key；其余原生 provider 的变量置空（pi 视空串为未设置），
             // 防止宿主环境里的同名变量被子进程继承。
+            // 所选原生 provider 没有 key 时不为它 push：继承宿主里同一家的同名变量。
             for n in providers::NATIVE {
-                let v = if n.id == p {
-                    lookup_key(n.id).unwrap_or_default()
+                if n.id == p {
+                    if let Some(k) = lookup_key(n.id) {
+                        out.env.push((n.env_var.to_string(), k));
+                    }
                 } else {
-                    String::new()
-                };
-                out.env.push((n.env_var.to_string(), v));
+                    out.env.push((n.env_var.to_string(), String::new()));
+                }
             }
             if providers::native(p).is_none() {
                 if let (Some(var), Some(k)) = (crate::secrets::env_var_for(p), lookup_key(p)) {
@@ -190,9 +214,16 @@ pub fn model_launch(
             let mut ids: Vec<String> = providers::NATIVE.iter().map(|n| n.id.to_string()).collect();
             if allow_custom {
                 ids.extend(custom.iter().map(|c| c.id.clone()));
-                out.models_json = providers::models_json(custom, |id| lookup_key(id).is_some());
             }
-            out.env = crate::secrets::key_env_pairs_with(&ids, &lookup_key);
+            // 每个 id 只读一次钥匙串，env 与 models.json 共用这份结果。
+            let found: std::collections::HashMap<String, String> = ids
+                .iter()
+                .filter_map(|id| Some((id.clone(), lookup_key(id)?)))
+                .collect();
+            out.env = crate::secrets::key_env_pairs_with(&ids, |id| found.get(id).cloned());
+            if allow_custom {
+                out.models_json = providers::models_json(custom, |id| found.contains_key(id));
+            }
         }
     }
     out
@@ -474,7 +505,50 @@ mod tests {
     fn model_launch_main_session_ignores_custom_choice() {
         let c = [mock_custom()];
         let l = model_launch(&eff(Some("custom-mock"), Some("m1")), &c, key_of, false);
-        assert_eq!(l, ModelLaunch::default());
+        // 退回「provider 未知」路径：已配置的原生 key 都在，没有参数、没有 models.json、不注入自定义。
+        assert!(l.args.is_empty());
+        assert!(l.models_json.is_none());
+        assert_eq!(env_get(&l, "DEEPSEEK_API_KEY"), Some("sk-test-fake"));
+        assert_eq!(env_get(&l, "ANTHROPIC_API_KEY"), Some("sk-test-fake"));
+        assert_eq!(env_get(&l, "SUPERAGENT_KEY_CUSTOM_MOCK"), None);
+    }
+
+    #[test]
+    fn model_launch_selected_native_without_key_is_not_blanked() {
+        // groq 没有 key：不为它 push（继承宿主同名变量），其余原生变量照样置空。
+        let l = model_launch(&eff(Some("groq"), Some("m")), &[], key_of, true);
+        assert_eq!(env_get(&l, "GROQ_API_KEY"), None);
+        assert_eq!(env_get(&l, "DEEPSEEK_API_KEY"), Some(""));
+        assert_eq!(l.env.len(), crate::providers::NATIVE.len() - 1);
+    }
+
+    #[test]
+    fn model_launch_unknown_provider_reads_each_key_once() {
+        let c = [mock_custom()];
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        model_launch(
+            &eff(None, None),
+            &c,
+            |id| {
+                calls.borrow_mut().push(id.to_string());
+                key_of(id)
+            },
+            true,
+        );
+        let calls = calls.into_inner();
+        let mut dedup = calls.clone();
+        dedup.sort();
+        dedup.dedup();
+        assert_eq!(calls.len(), dedup.len(), "{calls:?}");
+    }
+
+    #[test]
+    fn overrides_file_missing_fields_is_not_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("o.json");
+        std::fs::write(&p, r#"{"version":1}"#).unwrap();
+        let f = OverridesStore::new(p).load().unwrap();
+        assert!(f.apps.is_empty() && f.global.is_none());
     }
 
     #[test]

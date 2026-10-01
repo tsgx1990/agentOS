@@ -289,9 +289,17 @@ impl ProvidersStore {
         match std::fs::read_to_string(&self.path) {
             Ok(s) => serde_json::from_str::<ProvidersFile>(&s)
                 .map(|f| f.custom)
-                .map_err(|e| format!("{} 解析失败：{e}", self.path.display())),
+                .map_err(|e| {
+                    format!(
+                        "{} 解析失败：{e}（请修复或删除该文件）",
+                        self.path.display()
+                    )
+                }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(format!("{} 读取失败：{e}", self.path.display())),
+            Err(e) => Err(format!(
+                "{} 读取失败：{e}（请修复或删除该文件）",
+                self.path.display()
+            )),
         }
     }
 

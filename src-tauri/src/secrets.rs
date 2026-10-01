@@ -84,15 +84,6 @@ pub fn key_env_pairs_with(
         .collect()
 }
 
-/// 读出所有已配置原生 provider 的 Key，组装成 spawn 子进程用的环境变量对。
-pub fn key_env_pairs() -> Vec<(String, String)> {
-    let ids: Vec<String> = crate::providers::NATIVE
-        .iter()
-        .map(|p| p.id.to_string())
-        .collect();
-    key_env_pairs_with(&ids, read_key)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
