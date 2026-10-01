@@ -1,5 +1,6 @@
 use crate::capability::{CallerIdentity, CapabilityRegistry, LaunchContribution, LaunchCtx};
 use crate::mcp::McpManager;
+use crate::model_overrides::ModelLaunch;
 use crate::paths::DataLayout;
 use crate::registry::{InstalledApp, RegistryStore};
 use std::path::{Path, PathBuf};
@@ -155,12 +156,14 @@ pub fn assemble_launch_plan(
     layout: &DataLayout,
     hosttools_dir: &Path,
     sandboxed: bool,
+    model: &ModelLaunch,
 ) -> LaunchPlan {
     let mut plan = build_launch(app, layout, hosttools_dir);
-    if let Some(model) = &manifest.superagent.model {
-        plan.extra_args.push("--model".into());
-        plan.extra_args.push(model.clone());
-    }
+    // 模型选择（应用覆盖 > 全局默认 > 清单默认）与按所选 provider 最小注入的密钥环境变量，
+    // 由调用方经 `resolve_model_launch` 算好后传入。这是产生启动计划的唯一拼装点，
+    // 交互与 headless 两条路径一起受益（此前应用会话的 plan.env 里没有任何密钥）。
+    plan.extra_args.extend(model.args.iter().cloned());
+    plan.env.extend(model.env.iter().cloned());
     let mut tools = resolve_tools(&manifest.superagent.tools, app.trusted, sandboxed);
     for t in &contribution.tools {
         if !tools.contains(t) {
@@ -211,6 +214,59 @@ pub fn assemble_launch_plan(
     plan.sandbox_read = contribution.sandbox_read.clone();
     plan.sandbox_write = contribution.sandbox_write.clone();
     plan
+}
+
+/// 两条真实会话路径（交互 / headless）共用：读 providers.json、model-overrides.json 与钥匙串，
+/// 算出该应用的 `ModelLaunch`（--provider/--model 参数、最小注入的密钥环境变量、models.json）。
+fn resolve_model_launch(
+    layout: &DataLayout,
+    app_id: &str,
+    manifest: &crate::pkg::Manifest,
+) -> Result<ModelLaunch, String> {
+    let custom = crate::providers::ProvidersStore::new(layout.providers_path()).list()?;
+    let overrides =
+        crate::model_overrides::OverridesStore::new(layout.model_overrides_path()).load()?;
+    let eff = crate::model_overrides::resolve(
+        Some(app_id),
+        &overrides,
+        manifest.superagent.model.as_deref(),
+        |id| crate::providers::is_known(id, &custom),
+    );
+    Ok(crate::model_overrides::model_launch(
+        &eff,
+        &custom,
+        crate::secrets::read_key,
+        true,
+    ))
+}
+
+/// 写 settings.json；`models_json` 为 Some 则写 models.json，None 则删除旧的 models.json
+/// （NotFound 忽略）——防止撤销自定义 provider 后旧文件残留。models.json 里只有
+/// `${环境变量名}` 引用，没有密钥字面值。
+fn write_agent_home(
+    home: &Path,
+    settings: &serde_json::Value,
+    models_json: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
+    std::fs::write(
+        home.join("settings.json"),
+        serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let models_path = home.join("models.json");
+    match models_json {
+        Some(v) => std::fs::write(
+            &models_path,
+            serde_json::to_string_pretty(v).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string()),
+        None => match std::fs::remove_file(&models_path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        },
+    }
 }
 
 /// 根据 `tool_execution_end` 的 `isError` 计算审计动词：`"allow"` = 工具真正执行成功
@@ -491,17 +547,6 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
     // 或在这里另行相与。
     let sandboxed = sandboxing_available();
 
-    // 写受限 settings.json（packages 只含该应用自己一个包；sandboxed 决定第三方
-    // 是否加载 extensions，见 build_settings_json 文档）
-    let home = layout.agent_home_dir(&app_id);
-    std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
-    std::fs::write(
-        home.join("settings.json"),
-        serde_json::to_string_pretty(&build_settings_json(&record, &layout, sandboxed)).unwrap(),
-    )
-    .map_err(|e| e.to_string())?;
-    layout.ensure_app(&app_id).map_err(|e| e.to_string())?;
-
     // hosttools 目录走真实资源解析（生产打包内为 resource_dir()/hosttools，dev
     // 回退到仓库内 src-tauri/hosttools）。
     let hosttools = crate::hosttools_dir(app);
@@ -520,6 +565,17 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
         &layout.packages_dir(&app_id),
         &manifest.superagent.permissions,
     )?;
+
+    // 写受限 settings.json（packages 只含该应用自己一个包；sandboxed 决定第三方
+    // 是否加载 extensions，见 build_settings_json 文档）与按所选 provider 生成的
+    // models.json（清单要先读到才能算出有效模型，所以挪到这里）。
+    let model_launch = resolve_model_launch(&layout, &app_id, &manifest)?;
+    write_agent_home(
+        &layout.agent_home_dir(&app_id),
+        &build_settings_json(&record, &layout, sandboxed),
+        model_launch.models_json.as_ref(),
+    )?;
+    layout.ensure_app(&app_id).map_err(|e| e.to_string())?;
 
     let identity = CallerIdentity {
         app_id: app_id.clone(),
@@ -600,6 +656,7 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
         &layout,
         &hosttools,
         sandboxed,
+        &model_launch,
     );
 
     // Task14b：按 system.schedule 权限门控，把该 app 清单声明的 scheduledTasks
@@ -1161,13 +1218,12 @@ async fn run_headless_session(
 
     let sandboxed = sandboxing_available();
 
-    let home = layout.agent_home_dir(&app.app_id);
-    std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
-    std::fs::write(
-        home.join("settings.json"),
-        serde_json::to_string_pretty(&build_settings_json(app, layout, sandboxed)).unwrap(),
-    )
-    .map_err(|e| e.to_string())?;
+    let model_launch = resolve_model_launch(layout, &app.app_id, &manifest)?;
+    write_agent_home(
+        &layout.agent_home_dir(&app.app_id),
+        &build_settings_json(app, layout, sandboxed),
+        model_launch.models_json.as_ref(),
+    )?;
     layout.ensure_app(&app.app_id).map_err(|e| e.to_string())?;
 
     let mcp_socket_for_sandbox = if contribution.needs_socket {
@@ -1183,6 +1239,7 @@ async fn run_headless_session(
         layout,
         hosttools_dir,
         sandboxed,
+        &model_launch,
     );
 
     let session_dir = layout.session_dir(&app.app_id);
@@ -1746,6 +1803,7 @@ mod tests {
             &layout,
             Path::new("/ht"),
             true,
+            &ModelLaunch::default(),
         );
         let tools = tools_arg(&plan);
         for t in [
@@ -1781,6 +1839,7 @@ mod tests {
             &layout,
             Path::new("/ht"),
             true,
+            &ModelLaunch::default(),
         );
         assert_eq!(tools_arg(&plan), resolve_tools(&[], false, true));
         assert!(!plan.extra_args.iter().any(|a| a.ends_with("mcp_bridge.ts")));
@@ -1801,6 +1860,7 @@ mod tests {
             &layout,
             Path::new("/ht"),
             true,
+            &ModelLaunch::default(),
         );
         let tools = tools_arg(&plan);
         assert_eq!(tools.iter().filter(|t| *t == "read").count(), 1);
@@ -1829,6 +1889,7 @@ mod tests {
             &layout,
             Path::new("/ht"),
             true,
+            &ModelLaunch::default(),
         );
         let tools = tools_arg(&plan);
         assert!(tools.contains(&"ok".to_string()), "{tools:?}");
@@ -1868,6 +1929,7 @@ mod tests {
             &layout,
             Path::new("/ht"),
             true,
+            &ModelLaunch::default(),
         );
         let tools = tools_arg(&plan);
         assert!(tools.contains(&"ok".to_string()), "{tools:?}");
@@ -1903,6 +1965,76 @@ mod tests {
             .env
             .iter()
             .any(|(k, v)| k == "SUPERAGENT_APP_ID" && v == "my-app"));
+    }
+
+    // ---- 模型启动注入 ----
+
+    #[test]
+    fn launch_plan_appends_model_launch_args_and_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let ml = ModelLaunch {
+            args: vec![
+                "--provider".into(),
+                "deepseek".into(),
+                "--model".into(),
+                "deepseek-v4-flash".into(),
+            ],
+            env: vec![("DEEPSEEK_API_KEY".into(), "sk-test-fake".into())],
+            models_json: None,
+        };
+        let plan = assemble_launch_plan(
+            &fake_app("a", false),
+            &manifest_min(),
+            &LaunchContribution::default(),
+            &layout,
+            Path::new("/ht"),
+            true,
+            &ml,
+        );
+        let pos = |x: &str| plan.extra_args.iter().position(|a| a == x).unwrap();
+        assert_eq!(plan.extra_args[pos("--provider") + 1], "deepseek");
+        assert_eq!(plan.extra_args[pos("--model") + 1], "deepseek-v4-flash");
+        assert!(pos("--provider") < pos("--tools") && pos("--model") < pos("--tools"));
+        assert!(plan
+            .env
+            .iter()
+            .any(|(k, v)| k == "DEEPSEEK_API_KEY" && v == "sk-test-fake"));
+    }
+
+    #[test]
+    fn launch_plan_with_default_model_launch_has_no_model_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let plan = assemble_launch_plan(
+            &fake_app("a", false),
+            &manifest_min(),
+            &LaunchContribution::default(),
+            &layout,
+            Path::new("/ht"),
+            true,
+            &ModelLaunch::default(),
+        );
+        assert!(!plan
+            .extra_args
+            .iter()
+            .any(|a| a == "--model" || a == "--provider"));
+    }
+
+    #[test]
+    fn write_agent_home_removes_stale_models_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("agenthome").join("a");
+        let settings = serde_json::json!({"packages": []});
+        let models = serde_json::json!({"providers": {}});
+        write_agent_home(&home, &settings, Some(&models)).unwrap();
+        assert!(home.join("models.json").exists());
+        assert!(home.join("settings.json").exists());
+        write_agent_home(&home, &settings, None).unwrap();
+        assert!(!home.join("models.json").exists());
+        assert!(home.join("settings.json").exists());
+        // 本就没有时也不报错
+        write_agent_home(&home, &settings, None).unwrap();
     }
 
     // ---- audit_verdict_for_tool_execution ----

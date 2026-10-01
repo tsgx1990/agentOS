@@ -187,6 +187,11 @@ pub fn is_valid_custom_id(id: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// 原生目录里有，或在已保存的自定义 provider 里。
+pub fn is_known(id: &str, custom: &[CustomProvider]) -> bool {
+    native(id).is_some() || custom.iter().any(|c| c.id == id)
+}
+
 /// "custom-moonshot" -> "SUPERAGENT_KEY_CUSTOM_MOONSHOT"；前缀与原生环境变量不相交。
 pub fn custom_env_var(id: &str) -> String {
     format!("SUPERAGENT_KEY_{}", id.to_uppercase().replace('-', "_"))

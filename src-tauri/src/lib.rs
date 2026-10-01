@@ -11,6 +11,7 @@ pub mod maker;
 pub mod market;
 pub mod mcp;
 pub mod mcp_socket;
+pub mod model_overrides;
 pub mod notifications;
 pub mod paths;
 pub mod permissions;
@@ -35,7 +36,6 @@ use app_state::AppState;
 use byok::{classify_error, frontend_payload};
 use paths::DataLayout;
 use rpc::{PiEvent, RpcSession};
-use secrets::key_env_pairs;
 use tauri::{http, Emitter, Manager, State};
 
 #[tauri::command]
@@ -594,12 +594,34 @@ async fn restart_session(app: tauri::AppHandle) -> Result<(), String> {
     start_main_session(app).await
 }
 
+/// 主会话的模型与密钥注入：只看全局默认（没有应用覆盖、没有清单），未设置时
+/// 与此前行为一致（注入全部已配置的原生 provider 密钥）。主会话没有私有 agent home，
+/// 写不了 models.json，所以选中自定义 provider 时退化为默认行为。
+fn main_session_launch(layout: &DataLayout) -> model_overrides::ModelLaunch {
+    let custom = providers::ProvidersStore::new(layout.providers_path())
+        .list()
+        .unwrap_or_else(|e| {
+            eprintln!("读取自定义 provider 失败，主会话按无自定义处理：{e}");
+            Vec::new()
+        });
+    let overrides = model_overrides::OverridesStore::new(layout.model_overrides_path())
+        .load()
+        .unwrap_or_else(|e| {
+            eprintln!("读取模型选择失败，主会话按默认处理：{e}");
+            Default::default()
+        });
+    let eff = model_overrides::resolve(None, &overrides, None, |id| {
+        providers::is_known(id, &custom)
+    });
+    model_overrides::model_launch(&eff, &custom, secrets::read_key, false)
+}
+
 async fn start_main_session(app: tauri::AppHandle) -> Result<(), String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let layout = DataLayout::new(root);
     let session_dir = layout.ensure("main").map_err(|e| e.to_string())?;
-    let env = key_env_pairs();
-    let (session, rx) = RpcSession::spawn(&session_dir, env).await?;
+    let ml = main_session_launch(&layout);
+    let (session, rx) = RpcSession::spawn_with(&session_dir, ml.env, ml.args).await?;
 
     let state = app.state::<AppState>();
     *state.main_session.lock().await = Some(session);
@@ -688,8 +710,9 @@ async fn start_main_session(app: tauri::AppHandle) -> Result<(), String> {
             match backoff.next_delay() {
                 Some(delay) => {
                     tokio::time::sleep(delay).await;
-                    let env = key_env_pairs();
-                    match RpcSession::spawn(&session_dir, env).await {
+                    // 重启时重新读全局默认与钥匙串：用户在两次重启之间改了选择也立即生效。
+                    let ml = main_session_launch(&layout);
+                    match RpcSession::spawn_with(&session_dir, ml.env, ml.args).await {
                         Ok((s, new_rx)) => {
                             *app.state::<AppState>().main_session.lock().await = Some(s);
                             rx = new_rx;
@@ -1510,6 +1533,9 @@ pub fn run() {
             providers::save_custom_provider,
             providers::remove_custom_provider,
             providers::custom_provider_presets,
+            model_overrides::get_model_settings,
+            model_overrides::set_global_model,
+            model_overrides::set_app_model,
             send_prompt,
             restart_session,
             open_app,

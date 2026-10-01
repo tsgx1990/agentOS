@@ -54,7 +54,8 @@ pub struct SuperagentField {
     pub permissions: String,
     #[serde(default)]
     pub subagents: Vec<String>,
-    /// 该应用希望使用的模型（可选）；`open_app` 若存在则追加 `--model <model>`。
+    /// 该应用希望使用的模型（可选），作为最低优先级的默认值（应用覆盖 > 全局默认 > 此项）。
+    /// 支持 `provider/model` 写法（仅当 `/` 之前是已知 provider 时才拆分）。
     #[serde(default)]
     pub model: Option<String>,
     /// 该应用希望启用的工具列表（可选）；`open_app` 若非空则追加 `--tools <逗号拼接>`。
