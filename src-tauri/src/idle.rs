@@ -178,13 +178,36 @@ impl IdlePolicyStore {
         }
     }
 
-    /// 文件缺失或损坏 → 默认值（不报错）；越界的 timeout 视同损坏。
+    /// 文件缺失或损坏（解析失败）→ 默认值（不报错）；越界的 timeout 只把该字段夹到
+    /// 合法范围，`enabled` 与 `exempt_apps` 照常保留（手改文件不应让用户的豁免名单悄悄作废）。
     pub fn load(&self) -> IdlePolicy {
         std::fs::read(&self.path)
             .ok()
             .and_then(|b| serde_json::from_slice::<IdlePolicy>(&b).ok())
-            .filter(|p| (MIN_IDLE_TIMEOUT_SECS..=MAX_IDLE_TIMEOUT_SECS).contains(&p.timeout_secs))
+            .map(|mut p| {
+                p.timeout_secs = p
+                    .timeout_secs
+                    .clamp(MIN_IDLE_TIMEOUT_SECS, MAX_IDLE_TIMEOUT_SECS);
+                p
+            })
             .unwrap_or_default()
+    }
+
+    /// 把某应用移出「不休眠」名单（卸载用）。名单里没有它、或文件缺失/损坏 → 什么都不写。
+    pub fn remove_exempt(&self, app_id: &str) -> Result<(), String> {
+        let Some(mut p) = std::fs::read(&self.path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<IdlePolicy>(&b).ok())
+        else {
+            return Ok(());
+        };
+        if !p.exempt_apps.remove(app_id) {
+            return Ok(());
+        }
+        p.timeout_secs = p
+            .timeout_secs
+            .clamp(MIN_IDLE_TIMEOUT_SECS, MAX_IDLE_TIMEOUT_SECS);
+        self.save(&p)
     }
 
     /// timeout 越界 → Err 且不动文件；否则写临时文件再 rename。
@@ -334,7 +357,15 @@ pub async fn recycle(
         if !crate::session_mgr::close_app_in(state, &c.app_id).await {
             continue;
         }
-        state.activity.mark_dormant(&c.app_id);
+        // 关闭过程中用户可能已重开同一应用：只有确认 app_sessions 里没有它才标休眠。
+        // 检查与标记在同一把 guard 内（标记是同步调用，不跨 await），重开无法插在两者之间。
+        {
+            let sessions = state.app_sessions.lock().await;
+            if sessions.contains_key(&c.app_id) {
+                continue;
+            }
+            state.activity.mark_dormant(&c.app_id);
+        }
         let mut body = format!("空闲 {} 分钟，已自动关闭", c.idle_secs / 60);
         if let Some(b) = rss {
             body.push_str(&format!("，释放约 {} MB", b / (1024 * 1024)));
@@ -379,6 +410,39 @@ mod tests {
         assert_eq!(t.get("a"), None);
         t.touch("a", 200);
         assert_eq!(t.get("a"), None, "关闭后迟到的事件不得复活条目");
+    }
+
+    #[test]
+    fn touch_never_creates_an_entry() {
+        let t = ActivityTracker::default();
+        t.touch("never-opened", 10);
+        assert_eq!(t.get("never-opened"), None);
+        assert!(t.snapshot().is_empty());
+    }
+
+    #[test]
+    fn remove_exempt_drops_only_that_app_and_keeps_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let store = IdlePolicyStore::new(&layout);
+        store
+            .save(&IdlePolicy {
+                enabled: false,
+                timeout_secs: 600,
+                exempt_apps: ["x".to_string(), "y".to_string()].into_iter().collect(),
+            })
+            .unwrap();
+        store.remove_exempt("x").unwrap();
+        let p = store.load();
+        assert_eq!(p.exempt_apps.iter().collect::<Vec<_>>(), vec!["y"]);
+        assert!(!p.enabled);
+        assert_eq!(p.timeout_secs, 600);
+        // 不在名单里 / 文件不存在：不写文件、不报错。
+        store.remove_exempt("nope").unwrap();
+        let tmp2 = tempfile::tempdir().unwrap();
+        let store2 = IdlePolicyStore::new(&DataLayout::new(tmp2.path().to_path_buf()));
+        store2.remove_exempt("x").unwrap();
+        assert!(!tmp2.path().join("idle-policy.json").exists());
     }
 
     #[test]
@@ -539,6 +603,29 @@ mod tests {
         assert_eq!(store.load(), IdlePolicy::default());
         std::fs::write(layout.idle_policy_path(), "{oops").unwrap();
         assert_eq!(store.load(), IdlePolicy::default());
+    }
+
+    #[test]
+    fn policy_store_clamps_out_of_range_timeout_but_keeps_other_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().to_path_buf());
+        let store = IdlePolicyStore::new(&layout);
+        let write = |timeout: i64| {
+            std::fs::write(
+                layout.idle_policy_path(),
+                format!(r#"{{"enabled":false,"timeout_secs":{timeout},"exempt_apps":["x"]}}"#),
+            )
+            .unwrap();
+        };
+        write(10);
+        let p = store.load();
+        assert_eq!(p.timeout_secs, MIN_IDLE_TIMEOUT_SECS);
+        assert!(!p.enabled);
+        assert!(p.exempt_apps.contains("x"));
+        write(1_000_000);
+        let p = store.load();
+        assert_eq!(p.timeout_secs, MAX_IDLE_TIMEOUT_SECS);
+        assert!(!p.enabled && p.exempt_apps.contains("x"));
     }
 
     #[test]

@@ -217,6 +217,7 @@ pub fn aggregate(
 pub struct ResourceSampler {
     sys: sysinfo::System,
     refreshed_once: bool,
+    with_cpu: bool,
 }
 
 impl ResourceSampler {
@@ -225,6 +226,16 @@ impl ResourceSampler {
         Self {
             sys: sysinfo::System::new(),
             refreshed_once: false,
+            with_cpu: true,
+        }
+    }
+
+    /// 只刷新内存（不碰 CPU 统计）。给不需要 CPU% 的调用方（空闲回收量释放内存）用，
+    /// 它自己持有一个实例，不与资源面板的采样器共用，免得打乱面板的 CPU 基准。
+    pub fn memory_only() -> Self {
+        Self {
+            with_cpu: false,
+            ..Self::new()
         }
     }
 
@@ -232,11 +243,10 @@ impl ResourceSampler {
     /// cpu_ready = 本次之前已刷新过至少一次（CPU% 需要两次刷新之间的差值）。
     pub fn sample(&mut self) -> (Vec<ProcSample>, bool) {
         use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
-        self.sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_memory().with_cpu(),
-        );
+        let kind = ProcessRefreshKind::nothing().with_memory();
+        let kind = if self.with_cpu { kind.with_cpu() } else { kind };
+        self.sys
+            .refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
         let ready = self.refreshed_once;
         self.refreshed_once = true;
         let table = self
@@ -395,6 +405,19 @@ mod tests {
         assert!(descendants(&pairs, me).contains(&pid));
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn memory_only_sampler_reads_rss_without_cpu() {
+        let mut s = ResourceSampler::memory_only();
+        let (table, _) = s.sample();
+        let me = table
+            .iter()
+            .find(|p| p.pid == std::process::id())
+            .expect("本进程在表里");
+        assert!(me.rss_bytes > 0);
+        assert!(me.ppid.is_some());
+        assert_eq!(me.cpu_percent, 0.0, "只刷新内存，不产生 CPU 读数");
     }
 
     #[test]

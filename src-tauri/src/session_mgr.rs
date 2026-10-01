@@ -1080,6 +1080,9 @@ async fn open_app_after_acquire(app: &tauri::AppHandle, app_id: &str) -> Result<
 pub async fn close_app_in(state: &crate::app_state::AppState, app_id: &str) -> bool {
     let removed = state.app_sessions.lock().await.remove(app_id);
     if let Some(mut s) = removed {
+        // 活动记录必须在摘除会话之后、第一次 await 之前同步删掉：后面的 kill / 停监听
+        // 都会让出执行权，用户可能在这个窗口里重开同一应用，那时新会话的记录不能被误删。
+        state.activity.on_close(app_id);
         s.kill().await;
         // Task9b：该 app 若有 MCP socket 监听器在跑，一并停掉（中止 accept 循环 +
         // 删 socket 文件）——同 app_sessions 的 per-app 资源生命周期模式，放在
@@ -1092,7 +1095,6 @@ pub async fn close_app_in(state: &crate::app_state::AppState, app_id: &str) -> b
         // 了一个会话”时才发生，避免对一个根本没打开过的 app_id 释放别人的名额。
         state.slots.lock().unwrap().release_app(app_id);
         state.gate.lock().await.release();
-        state.activity.on_close(app_id);
         true
     } else {
         false

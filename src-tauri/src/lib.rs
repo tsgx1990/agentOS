@@ -112,7 +112,12 @@ fn app_state_set(
     value: serde_json::Value,
 ) -> Result<(), String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    state_store::set(&DataLayout::new(root), &app_id, &key, &value)
+    state_store::set(&DataLayout::new(root), &app_id, &key, &value)?;
+    // 界面保存状态算一次活动（只刷新已存在的条目，不会给未打开的应用建条目）。
+    app.state::<AppState>()
+        .activity
+        .touch(&app_id, idle::now_secs());
+    Ok(())
 }
 
 /// 读取已装应用注册表（`registry.json`），供前端 NavRail 做真实类目计数。
@@ -244,6 +249,10 @@ async fn uninstall_app(
     app.state::<AppState>().activity.forget(&app_id);
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let layout = DataLayout::new(root);
+    // 「不休眠」名单里也不再留它：卸载后同名应用重装不应悄悄继承豁免。
+    if let Err(e) = idle::IdlePolicyStore::new(&layout).remove_exempt(&app_id) {
+        eprintln!("卸载时清理不休眠名单失败：{e}");
+    }
     let reg = registry::RegistryStore::new(layout.registry_path());
     install::uninstall_fs(&app_id, &layout, &reg, keep_app_data)
 }
@@ -549,26 +558,19 @@ async fn clear_caches(
     // 该目录一个文件都不删。
     let activity: std::collections::HashMap<String, idle::AppActivity> =
         state.activity.snapshot().into_iter().collect();
-    let mut running: disk::RunningSessions = std::collections::HashMap::new();
-    let mut note = |id: String, start: Option<std::time::SystemTime>| {
-        running
-            .entry(id)
-            .and_modify(|cur| {
-                *cur = match (*cur, start) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    _ => None,
-                }
-            })
-            .or_insert(start);
-    };
     let at = |secs: i64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs.max(0) as u64);
-    for id in state.app_sessions.lock().await.keys() {
-        note(id.clone(), activity.get(id).map(|a| at(a.opened_at)));
-    }
-    note("main".to_string(), None);
-    for h in session_mgr::running_headless_sessions() {
-        note(h.app_id, Some(at(h.started_at)));
-    }
+    let foreground: Vec<(String, Option<std::time::SystemTime>)> = state
+        .app_sessions
+        .lock()
+        .await
+        .keys()
+        .map(|id| (id.clone(), activity.get(id).map(|a| at(a.opened_at))))
+        .collect();
+    let background: Vec<(String, std::time::SystemTime)> = session_mgr::running_headless_sessions()
+        .into_iter()
+        .map(|h| (h.app_id, at(h.started_at)))
+        .collect();
+    let running = disk::build_running_sessions(&foreground, &background);
     let pending: Vec<std::path::PathBuf> = state
         .mcp
         .pending_install_dirs()
@@ -1067,15 +1069,11 @@ async fn start_maintenance_loop(app: tauri::AppHandle) {
         if picks.is_empty() {
             continue;
         }
-        let handle = app.clone();
         let cands = picks.clone();
         let rss: Vec<Option<u64>> = tauri::async_runtime::spawn_blocking(move || {
-            let st = handle.state::<AppState>();
-            let (table, _) = st
-                .sampler
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .sample();
+            // 维护循环自己的采样器（只要内存），不碰资源面板的 `state.sampler`，
+            // 否则会把面板两次轮询之间的 CPU 基准打乱。
+            let (table, _) = resources::ResourceSampler::memory_only().sample();
             let tree: Vec<(u32, Option<u32>)> = table.iter().map(|p| (p.pid, p.ppid)).collect();
             cands
                 .iter()

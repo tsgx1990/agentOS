@@ -232,3 +232,71 @@ async fn recycled_app_can_reopen() {
     e.state.activity.on_open(APP, 1000);
     assert!(e.state.activity.dormant().is_empty());
 }
+
+/// 持有 mcp_sockets 锁，把 `close_app_in` 卡在「已摘除会话、尚未结束」的窗口里。
+async fn wait_until_session_removed(state: &AppState, app_id: &str) {
+    for _ in 0..200 {
+        if !state.app_sessions.lock().await.contains_key(app_id) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("会话迟迟没有被摘除");
+}
+
+#[tokio::test]
+async fn close_drops_activity_before_first_await_after_remove() {
+    let _g = ENV_LOCK.lock().await;
+    let e = setup(0).await;
+    let state = std::sync::Arc::new(e.state);
+    let hold = state.mcp_sockets.lock().await;
+    let s2 = state.clone();
+    let t = tokio::spawn(async move { close_app_in(&s2, APP).await });
+    wait_until_session_removed(&state, APP).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        state.activity.get(APP),
+        None,
+        "摘除会话后活动记录应立即删除，不能等到后面几次 await 之后"
+    );
+    drop(hold);
+    assert!(t.await.unwrap());
+}
+
+#[tokio::test]
+async fn reopen_during_close_is_not_marked_dormant() {
+    let _g = ENV_LOCK.lock().await;
+    let e = setup(0).await;
+    let state = std::sync::Arc::new(e.state);
+    let picks = plan_idle_recycle(&state, &e.layout, 960).await;
+    assert_eq!(picks.len(), 1);
+    let store = std::sync::Arc::new(NotificationStore::new(e.layout.clone(), McpManager::new()));
+    let hold = state.mcp_sockets.lock().await;
+    let (s2, st2) = (state.clone(), store.clone());
+    let t = tokio::spawn(async move {
+        recycle(
+            &s2,
+            &st2,
+            picks.into_iter().map(|c| (c, None)).collect(),
+            960,
+        )
+        .await
+    });
+    wait_until_session_removed(&state, APP).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // 用户在关闭尚未收尾时重开同一应用。
+    open_fake(&state, APP, 970).await;
+    drop(hold);
+    let done = t.await.unwrap();
+    assert!(done.is_empty(), "已被重开的应用不得算作被回收");
+    assert!(state.activity.dormant().is_empty(), "新会话不得被标休眠");
+    assert!(
+        state.activity.get(APP).is_some(),
+        "新会话的活动记录不得被删"
+    );
+    assert!(store
+        .list(&NotificationFilter::default())
+        .iter()
+        .all(|n| n.title != "已休眠"));
+    close_app_in(&state, APP).await;
+}
