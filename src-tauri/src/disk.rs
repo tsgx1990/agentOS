@@ -19,7 +19,10 @@ pub struct AppDisk {
     pub sessions_bytes: u64,
     pub data_bytes: u64,
     pub agent_home_bytes: u64,
+    /// 只按实际字节：`sessions_bytes > threshold`。
     pub sessions_over_threshold: bool,
+    /// 该应用的 sessions / data / agent home 任一目录层级过深而没统计全（数值偏小）。
+    pub incomplete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -101,7 +104,7 @@ pub fn dir_size_checked(path: &Path) -> (u64, bool) {
 
 /// 递归求和；不跟随符号链接（目录只经 `O_NOFOLLOW` 句柄进入）；路径不存在 → 0；单项读错误跳过。
 /// 超过层级上限的子目录不计入这里的数值；要知道有没有漏算用 `dir_size_checked`
-/// （`disk_report` 用它，漏算时把 `incomplete` 置位并把该应用的会话提示置为超阈值）。
+/// （`disk_report` 用它，漏算时把全局与该应用的 `incomplete` 置位；超阈值提示仍只按实际字节）。
 pub fn dir_size(path: &Path) -> u64 {
     dir_size_checked(path).0
 }
@@ -124,13 +127,15 @@ pub fn disk_report_with_threshold(
     let mut apps: Vec<AppDisk> = Vec::new();
     for id in app_ids {
         let (sessions_bytes, sessions_complete) = size(layout.session_dir(id));
+        let (data_bytes, data_complete) = size(layout.app_data_dir(id));
+        let (agent_home_bytes, home_complete) = size(layout.agent_home_dir(id));
         apps.push(AppDisk {
             app_id: id.clone(),
             sessions_bytes,
-            data_bytes: size(layout.app_data_dir(id)).0,
-            agent_home_bytes: size(layout.agent_home_dir(id)).0,
-            // 层级过深导致没算全，按「超阈值」提示：不能让应用靠深目录躲过提示。
-            sessions_over_threshold: sessions_bytes > threshold || !sessions_complete,
+            data_bytes,
+            agent_home_bytes,
+            sessions_over_threshold: sessions_bytes > threshold,
+            incomplete: !(sessions_complete && data_complete && home_complete),
         });
     }
     apps.sort_by(|a, b| {
@@ -667,12 +672,29 @@ mod tests {
         assert!(!complete);
         let r = disk_report_with_threshold(&l, &["a".into()], 1_000_000);
         assert!(r.incomplete);
-        assert!(r.apps[0].sessions_over_threshold);
+        // 层级过深只标「统计不完整」，不冒充「超过阈值」。
+        assert!(r.apps[0].incomplete);
+        assert!(!r.apps[0].sessions_over_threshold);
         // 清理：能处理的处理，超深的计入 refused
         let rep = clear_caches(&l, None, &no_run(), &[], SystemTime::now()).unwrap();
         assert!(!td.path().join("sessions/a/top").exists());
         assert!(rep.refused.iter().any(|x| x.starts_with("sessions/a")));
         assert!(deep.join("big").exists());
+    }
+
+    #[test]
+    fn incomplete_is_marked_per_app() {
+        let (td, l) = layout();
+        let deep = deep_dir(&td.path().join("sessions/deep"), MAX_DEPTH + 6);
+        write(&deep.join("big"), 1000);
+        write(&td.path().join("sessions/ok/f"), 10);
+        let r = disk_report_with_threshold(&l, &["deep".into(), "ok".into()], 1_000_000);
+        assert!(r.incomplete);
+        let by = |id: &str| r.apps.iter().find(|a| a.app_id == id).unwrap();
+        assert!(by("deep").incomplete);
+        assert!(!by("deep").sessions_over_threshold);
+        assert!(!by("ok").incomplete);
+        assert!(!by("ok").sessions_over_threshold);
     }
 
     #[cfg(unix)]
