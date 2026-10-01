@@ -558,7 +558,7 @@ mod tests {
         std::fs::create_dir_all(&old).unwrap();
         std::fs::create_dir_all(&fresh).unwrap();
         std::fs::write(old.join("models.json"), "{}").unwrap();
-        // 阈值为 0：现有目录都算过期；阈值很大：都保留。
+        // 阈值很大（1 小时）：都保留；睡 50ms 后阈值 10ms：都算过期。
         cleanup_stale_probes(t.path(), Duration::from_secs(3600));
         assert!(old.exists() && fresh.exists());
         std::thread::sleep(Duration::from_millis(50));
