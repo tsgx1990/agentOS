@@ -317,7 +317,10 @@ fn load_json_file<T: for<'de> Deserialize<'de>>(path: &std::path::Path) -> Resul
 }
 
 /// 原子写：先写 `.json.tmp` 再 `rename`，同 `scheduler.rs::TaskRegistry::save`。
-fn save_json_file<T: Serialize>(path: &std::path::Path, items: &[T]) -> Result<(), String> {
+pub(crate) fn save_json_file<T: Serialize + ?Sized>(
+    path: &std::path::Path,
+    items: &T,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

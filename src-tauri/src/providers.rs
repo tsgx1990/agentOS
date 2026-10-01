@@ -206,6 +206,15 @@ fn base_url_ok(url: &str) -> bool {
     if url.chars().any(char::is_whitespace) {
         return false;
     }
+    // 带 userinfo（用户名口令加 @ 再接主机）的地址一律拒绝：既防以回环地址冒充真实主机，
+    // 也避免把账号口令写进地址。
+    let authority = url
+        .split_once("://")
+        .map(|(_, r)| r.split(['/', '?', '#']).next().unwrap_or(""))
+        .unwrap_or("");
+    if authority.contains('@') {
+        return false;
+    }
     if let Some(rest) = url.strip_prefix("https://") {
         return !rest.is_empty() && !rest.starts_with('/');
     }
@@ -282,15 +291,8 @@ impl ProvidersStore {
     }
 
     fn save(&self, custom: Vec<CustomProvider>) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        // 原子写：先写 .json.tmp 再 rename（同 skills / approvals 的存盘方式）。
-        let tmp = self.path.with_extension("json.tmp");
-        let body = serde_json::to_string_pretty(&ProvidersFile { version: 1, custom })
-            .map_err(|e| e.to_string())?;
-        std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| e.to_string())
+        // 原子写复用 approvals 的公共 helper（tmp + rename，自动建父目录）。
+        crate::approvals::save_json_file(&self.path, &ProvidersFile { version: 1, custom })
     }
 
     pub fn upsert(&self, p: CustomProvider) -> Result<(), String> {
@@ -419,7 +421,11 @@ pub fn save_custom_provider(app: tauri::AppHandle, provider: CustomProvider) -> 
 /// 删除自定义 provider，同时清掉它在钥匙串里的 Key。
 #[tauri::command]
 pub fn remove_custom_provider(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if !is_valid_custom_id(&id) {
+        return Err(format!("不是自定义 provider：{id}"));
+    }
     store(&app)?.remove(&id)?;
+    // 合法 custom-* id 即使配置已不存在，也清理可能残留的钥匙串项。
     secrets::clear_api_key(id)
 }
 
@@ -683,6 +689,28 @@ mod tests {
                 },
             };
             validate_custom(&p).unwrap_or_else(|e| panic!("{}: {e}", pr.suggested_id));
+        }
+    }
+
+    #[test]
+    fn validate_rejects_userinfo_in_base_url() {
+        let mut p = sample("custom-a");
+        let at = '@';
+        for bad in [
+            format!("http://127.0.0.1:80{at}host.test/v1"),
+            format!("https://user:pw{at}host.test/v1"),
+            format!("https://user{at}host.test"),
+        ] {
+            p.base_url = bad.clone();
+            assert!(validate_custom(&p).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn remove_guard_only_allows_valid_custom_ids() {
+        assert!(is_valid_custom_id("custom-a"));
+        for bad in ["anthropic", "openai", "", "custom-", "Custom-a"] {
+            assert!(!is_valid_custom_id(bad), "{bad}");
         }
     }
 }
