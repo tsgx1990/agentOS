@@ -238,7 +238,11 @@ function CustomProviderForm(props: {
 }) {
   const [f, setF] = useState(props.initial);
   const [confirming, setConfirming] = useState(false);
-  const set = (k: keyof CustomForm) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
+  const set = (k: keyof CustomForm) => (e: { target: { value: string } }) => {
+    setF({ ...f, [k]: e.target.value });
+    // 确认针对的是「当时那个地址」：地址再变就作废，必须对新地址重新确认。
+    if (k === "baseUrl") setConfirming(false);
+  };
   const slug = f.id.trim().toLowerCase().replace(/^custom-/, "");
   const ok = slug !== "" && f.display.trim() !== "" && f.baseUrl.trim() !== "";
   const urlChanged = !!props.editing && f.baseUrl.trim() !== props.initial.baseUrl.trim();

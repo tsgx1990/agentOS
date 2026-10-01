@@ -88,3 +88,25 @@ test("点击「模型与密钥」入口切到模型设置页", async () => {
   fireEvent.click(screen.getByText("模型与密钥"));
   await waitFor(() => expect(screen.getByRole("heading", { name: "模型与密钥" })).toBeTruthy());
 });
+
+test("providersErr 在「模型与密钥」页里修好（list_providers 恢复成功）后被清除", async () => {
+  let broken = true;
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
+    if (cmd === "list_providers") return broken
+      ? Promise.reject("/x/providers.json 解析失败：bad（请修复或删除该文件）")
+      : Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
+    if (cmd === "get_model_settings") return Promise.resolve({ default_model: null, apps: [], global: null });
+    if (cmd === "custom_provider_presets" || cmd === "usage_by_model") return Promise.resolve([]);
+    return Promise.resolve(0);
+  });
+  render(<Shell />);
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("请修复或删除该文件"));
+  // 用户去设置页修好文件后重新进入：设置页拉到 list_providers 成功 → 回到工作台时不再显示旧错误。
+  broken = false;
+  fireEvent.click(screen.getByText("模型与密钥"));
+  await waitFor(() => expect(invokeMock.mock.calls.filter((c) => c[0] === "list_providers").length).toBeGreaterThanOrEqual(2));
+  fireEvent.click(await screen.findByRole("button", { name: /返回|关闭/ }));
+  await waitFor(() => expect(screen.getByText("待办")).toBeTruthy());
+  expect(screen.queryByText(/读取模型服务配置失败/)).toBeNull();
+});

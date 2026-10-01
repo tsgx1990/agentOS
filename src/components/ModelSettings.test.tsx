@@ -261,6 +261,30 @@ test("修改已有自定义服务的 base_url：先确认，确认后才调用 s
   );
 });
 
+test("确认条出现后接口地址再变化：确认被重置，必须重新确认", async () => {
+  await mount();
+  pick("我的自建服务");
+  fireEvent.click(screen.getByRole("button", { name: "修改此服务" }));
+  const url = screen.getByLabelText("接口地址（base URL）");
+  fireEvent.change(url, { target: { value: "https://other.example.com/v1" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  expect(screen.getByText("改地址后密钥会发往新地址，确定？")).toBeTruthy();
+  // 确认条在时再改地址：确认条消失，按钮回到「保存修改」，且不会直接提交。
+  fireEvent.change(url, { target: { value: "https://evil.example.com/v1" } });
+  expect(screen.queryByText("改地址后密钥会发往新地址，确定？")).toBeNull();
+  expect(screen.queryByRole("button", { name: "确定修改" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  expect(invokeMock).not.toHaveBeenCalledWith("save_custom_provider", expect.anything());
+  // 重新确认后才提交，且提交的是最新地址。
+  expect(screen.getByText("改地址后密钥会发往新地址，确定？")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "确定修改" }));
+  await waitFor(() =>
+    expect(invokeMock).toHaveBeenCalledWith("save_custom_provider", {
+      provider: expect.objectContaining({ base_url: "https://evil.example.com/v1" }),
+    }),
+  );
+});
+
 test("修改自定义服务但不改地址：不需要确认", async () => {
   await mount();
   pick("我的自建服务");

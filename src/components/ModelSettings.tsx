@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ModelSettingsView, type OtherUsageRow } from "./ModelSettingsView";
 import { clearApiKey, setApiKey } from "../lib/keys";
 import {
@@ -28,7 +28,12 @@ const EMPTY_SETTINGS: SettingsData = { global: null, apps: [] };
  * 页面始终显示后端的真值。用量是「本次运行」的累计（内存里，重启清零）。
  * 挂载点同 `ConnectorSettings`：`SessionPanel` 常驻入口 → `Shell` 中区状态分支。
  */
-export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
+export function ModelSettings(
+  { onClose, onProvidersLoaded }: { onClose?: () => void; onProvidersLoaded?: () => void } = {},
+) {
+  // 经 ref 取回调：避免它进 useCallback 依赖，导致父组件每次渲染（内联回调）都重跑挂载拉数据。
+  const providersLoadedRef = useRef(onProvidersLoaded);
+  providersLoadedRef.current = onProvidersLoaded;
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [presets, setPresets] = useState<CustomPreset[]>([]);
   const [settings, setSettings] = useState<SettingsData>(EMPTY_SETTINGS);
@@ -40,7 +45,11 @@ export function ModelSettings({ onClose }: { onClose?: () => void } = {}) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refreshProviders = useCallback(async () => setProviders(await listProviders()), []);
+  const refreshProviders = useCallback(async () => {
+    setProviders(await listProviders());
+    // 能成功拉到列表，说明配置文件已可读：通知外层清掉「读取模型服务配置失败」的旧提示。
+    providersLoadedRef.current?.();
+  }, []);
   const refreshSettings = useCallback(async () => setSettings(await getModelSettings()), []);
   const refreshUsage = useCallback(async (appIds: string[]) => {
     const rows = await usageByModel();

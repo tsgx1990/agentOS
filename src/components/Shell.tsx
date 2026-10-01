@@ -166,7 +166,7 @@ export function Shell() {
         ) : connectorSettings ? (
           <ConnectorSettings onClose={() => setConnectorSettings(false)} />
         ) : modelSettings ? (
-          <ModelSettings onClose={() => setModelSettings(false)} />
+          <ModelSettings onClose={() => setModelSettings(false)} onProvidersLoaded={() => setProvidersErr(null)} />
         ) : market ? (
           <MarketView onClose={() => setMarket(false)} onInstalled={refresh} />
         ) : notifications ? (
