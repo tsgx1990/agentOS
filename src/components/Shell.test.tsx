@@ -3,7 +3,7 @@ import { test, expect, vi } from "vitest";
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 const invokeMock = vi.fn().mockImplementation((cmd: string) => {
   if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
-  if (cmd === "has_api_key") return Promise.resolve(true);
+  if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
   if (cmd === "list_staged_calls" || cmd === "list_approval_rules") return Promise.resolve([]);
   return Promise.resolve(0);
 });
@@ -25,7 +25,7 @@ test("点击「审批中心」入口切到 ApprovalCenter", async () => {
 test("点击「技能」入口切到 SkillsView", async () => {
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
-    if (cmd === "has_api_key") return Promise.resolve(true);
+    if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: true, base_url: null, api: null, presets: [] }]);
     if (cmd === "list_staged_calls" || cmd === "list_approval_rules") return Promise.resolve([]);
     if (cmd === "list_skills" || cmd === "skill_grants" || cmd === "market_fetch_index") return Promise.resolve([]);
     return Promise.resolve(0);
@@ -36,13 +36,43 @@ test("点击「技能」入口切到 SkillsView", async () => {
   await waitFor(() => expect(screen.getByText("还没有安装技能")).toBeTruthy());
 });
 
-test("首次启动（无 key）渲染引导向导而非主工作台", async () => {
+test("首次启动（无任何已配置 provider）渲染引导向导而非主工作台", async () => {
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
-    if (cmd === "has_api_key") return Promise.resolve(false);
+    if (cmd === "list_providers") return Promise.resolve([{ id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: false, base_url: null, api: null, presets: [] }]);
     return Promise.resolve(0);
   });
   render(<Shell />);
   await waitFor(() => expect(screen.getByText(/欢迎使用/)).toBeTruthy());
   expect(screen.queryByText("待办")).toBeNull();
+});
+
+test("任一 provider 已配置（不一定是 Anthropic）→ 不显示向导", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
+    if (cmd === "list_providers") return Promise.resolve([
+      { id: "anthropic", display: "Anthropic（Claude）", native: true, region: "intl", configured: false, base_url: null, api: null, presets: [] },
+      { id: "deepseek", display: "DeepSeek 深度求索", native: true, region: "cn", configured: true, base_url: null, api: null, presets: [] },
+    ]);
+    return Promise.resolve(0);
+  });
+  render(<Shell />);
+  await waitFor(() => expect(screen.getByText("待办")).toBeTruthy());
+  expect(screen.queryByText(/欢迎使用/)).toBeNull();
+});
+
+test("点击「模型与密钥」入口切到模型设置页", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "list_apps") return Promise.resolve([{ app_id: "a", name: "a", version: "1.0.0", display_name: "待办", category: "life", icon: null, trusted: true, domains: [] }]);
+    if (cmd === "list_providers") return Promise.resolve([
+      { id: "deepseek", display: "DeepSeek 深度求索", native: true, region: "cn", configured: true, base_url: null, api: null, presets: ["deepseek-v4-flash"] },
+    ]);
+    if (cmd === "get_model_settings") return Promise.resolve({ global: null, apps: [] });
+    if (cmd === "custom_provider_presets" || cmd === "usage_by_model") return Promise.resolve([]);
+    return Promise.resolve(0);
+  });
+  render(<Shell />);
+  await waitFor(() => expect(screen.getByText("待办")).toBeTruthy());
+  fireEvent.click(screen.getByText("模型与密钥"));
+  await waitFor(() => expect(screen.getByRole("heading", { name: "模型与密钥" })).toBeTruthy());
 });

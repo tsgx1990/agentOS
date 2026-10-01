@@ -19,3 +19,21 @@ export type UsageResponse = {
 export function appUsage(appId: string): Promise<UsageResponse> {
   return invoke("app_usage", { appId });
 }
+
+/** 与 Rust `usage::ModelUsageRow` 对齐：按 (应用, provider, 模型) 拆分的一行用量。 */
+export type ModelUsageRow = {
+  app_id: string;
+  provider: string;
+  model: string;
+  input: number;
+  output: number;
+  cost: number;
+};
+
+/**
+ * 按模型拆分的用量；不传 `appId` 返回所有应用。总量见 `appUsage`，总量减各模型
+ * 之和就是「其他（工具 / 压缩）」。
+ */
+export function usageByModel(appId?: string): Promise<ModelUsageRow[]> {
+  return invoke("usage_by_model", { appId: appId ?? null });
+}

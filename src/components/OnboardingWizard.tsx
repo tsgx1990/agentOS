@@ -1,9 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./OnboardingWizard.css";
 import { setApiKey } from "../lib/keys";
+import {
+  TEST_COST_HINT,
+  getModelSettings,
+  listProviders,
+  setGlobalModel,
+  testProvider,
+  type ProbeReport,
+  type ProviderInfo,
+} from "../lib/providers";
+import { OnboardingProviderStep } from "./OnboardingProviderStep";
+import { ProbeResult } from "./ProviderDetail";
 
-type Step = "welcome" | "key" | "app";
+type Step = "welcome" | "provider" | "key" | "app";
 
 /**
  * 起步应用候选：`name` 对应后端 `install_builtin_sample` 的白名单样例目录名
@@ -21,8 +32,11 @@ const STARTER_APPS: { id: string; label: string; desc: string; name: string }[] 
 ];
 
 /**
- * 首次启动 key-first 引导向导：欢迎 → 配置 BYOK key（存系统钥匙串，P0
- * `set_api_key`，复用 `KeySetup` 同款 try/catch 错误展示）→ 可选装一个起步
+ * 首次启动 key-first 引导向导：欢迎 → 选模型服务（国内 / 国际卡片，P6-D）→
+ * 配置 BYOK key（存系统钥匙串，`set_api_key`，复用 `KeySetup` 同款 try/catch
+ * 错误展示）并自动做一次连通性测试：成功则（尚无全局默认时）把该服务的首个预设
+ * 设为全局默认；失败显示原因，可「重新填写」或「仍然继续」（不让网络 / 代理问题
+ * 把人锁在门外）→ 可选装一个起步
  * 应用（`install_builtin_sample`，白名单 + resource_dir 解析——不是
  * `InstallDialog` 手动装第三方包走的 `install_app(sourcePath, trusted)` 管道）
  * → 完成回调（交回 `Shell` 渲主工作台）。OAuth 未做，本向导只有 BYOK 一条
@@ -31,27 +45,78 @@ const STARTER_APPS: { id: string; label: string; desc: string; name: string }[] 
 export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const [step, setStep] = useState<Step>("welcome");
 
+  const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
+  const [providerErr, setProviderErr] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
   const [key, setKey] = useState("");
   const [keyErr, setKeyErr] = useState("");
   const [saving, setSaving] = useState(false);
+  const [probe, setProbe] = useState<ProbeReport | null>(null);
 
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [installedId, setInstalledId] = useState<string | null>(null);
   const [installErr, setInstallErr] = useState<string | null>(null);
 
+  useEffect(() => {
+    listProviders()
+      .then((ps) => setProviders(Array.isArray(ps) ? ps : []))
+      .catch((e) => {
+        setProviders([]);
+        setProviderErr(String(e));
+      });
+  }, []);
+
+  const selected = providers?.find((x) => x.id === selectedId) ?? null;
+  const testModel = selected?.presets[0] ?? "";
+
+  /** 尚无全局默认时，把所选服务的首个预设设为默认；已有就不覆盖。 */
+  async function ensureDefault(p: ProviderInfo) {
+    const s = await getModelSettings();
+    if (!s.global && p.presets[0]) await setGlobalModel({ provider: p.id, model: p.presets[0] });
+  }
+
   async function saveKey() {
+    if (!selected) return;
     setKeyErr("");
+    setProbe(null);
     setSaving(true);
     try {
-      await setApiKey("anthropic", key);
-      setStep("app");
+      await setApiKey(selected.id, key.trim());
+      setKey(""); // 保存即清空，从不回显
     } catch (e) {
       // BYOK 错误分治：keychain 打开/写入失败等具体原因原样透出（P0 secrets.rs
       // 已把各失败场景拼成人话字符串），不吞、不改写成通用提示。
       setKeyErr(String(e));
-    } finally {
       setSaving(false);
+      return;
     }
+    let report: ProbeReport;
+    try {
+      report = await testProvider(selected.id, testModel);
+    } catch (e) {
+      report = { ok: false, kind: "other", latency_ms: 0, provider: selected.id, model: testModel, message: String(e), detail: "" };
+    }
+    if (report.ok) {
+      try {
+        await ensureDefault(selected);
+        setKey("");
+        setStep("app");
+      } catch (e) {
+        setKeyErr(String(e));
+      }
+    } else {
+      setProbe(report);
+    }
+    setSaving(false);
+  }
+
+  /** 测试没过但用户确认继续：密钥已存，照样设默认（失败不拦人，之后可在「模型与密钥」里改）。 */
+  async function continueAnyway() {
+    if (selected) await ensureDefault(selected).catch(() => {});
+    setKey("");
+    setProbe(null);
+    setStep("app");
   }
 
   async function installStarter(app: (typeof STARTER_APPS)[number]) {
@@ -69,33 +134,67 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
 
   return (
     <div className="onboarding-wizard">
-      <div className="onboarding-card">
+      <div className={`onboarding-card${step === "provider" ? " onboarding-card-wide" : ""}`}>
         {step === "welcome" && (
           <>
             <div className="onboarding-orb" />
             <h1>欢迎使用 Super Agent OS</h1>
-            <p>一个能自己创建应用的智能助手系统。只需两步即可开始：配置模型 Key，再选一个起步应用（可选）。</p>
+            <p>一个能自己创建应用的智能助手系统。只需两步即可开始：选一个模型服务并配置 Key，再选一个起步应用（可选）。</p>
             <div className="onboarding-actions">
-              <button className="primary" onClick={() => setStep("key")}>开始设置</button>
+              <button className="primary" onClick={() => setStep("provider")}>开始设置</button>
             </div>
           </>
         )}
 
-        {step === "key" && (
+        {step === "provider" && (
           <>
-            <h2>配置模型 API Key</h2>
-            <p>你的 Key 只保存在系统钥匙串，永不写入磁盘文件。当前主助手运行于 Claude，需要 Anthropic API Key。</p>
+            <h2>选择模型服务</h2>
+            <p>应用需要一个大模型来工作。选一个你已有密钥的服务，稍后随时可以改。</p>
+            {providers === null ? (
+              <p>加载中……</p>
+            ) : (
+              <OnboardingProviderStep providers={providers} selectedId={selectedId} onSelect={setSelectedId} />
+            )}
+            {providerErr && <p className="onboarding-error" role="alert">{providerErr}</p>}
+            <div className="onboarding-actions">
+              <button onClick={() => setStep("welcome")}>上一步</button>
+              <button className="primary" disabled={!selected} onClick={() => setStep("key")}>下一步</button>
+            </div>
+          </>
+        )}
+
+        {step === "key" && selected && (
+          <>
+            <h2>配置 {selected.display} 的 API Key</h2>
+            <p>你的 Key 只保存在系统钥匙串，永不写入磁盘文件。保存后会自动测试连通性（{TEST_COST_HINT}）。</p>
             <input
               type="password"
-              placeholder="粘贴 Anthropic API Key"
+              autoComplete="off"
+              placeholder={`粘贴 ${selected.display} 的 API Key`}
               value={key}
               onChange={(e) => setKey(e.target.value)}
             />
-            {keyErr && <p className="onboarding-error">{keyErr}</p>}
+            {keyErr && <p className="onboarding-error" role="alert">{keyErr}</p>}
+            {probe && (
+              <>
+                <ProbeResult probe={probe} />
+                <p className="onboarding-note">密钥已保存。可能是网络或代理问题，你可以重新填写，或先继续、稍后在「模型与密钥」里再测。</p>
+              </>
+            )}
             <div className="onboarding-actions">
-              <button className="primary" disabled={!key || saving} onClick={saveKey}>
-                {saving ? "保存中…" : "保存并继续"}
-              </button>
+              {probe ? (
+                <>
+                  <button onClick={() => { setProbe(null); setKey(""); }}>重新填写</button>
+                  <button className="primary" onClick={continueAnyway}>仍然继续</button>
+                </>
+              ) : (
+                <>
+                  <button disabled={saving} onClick={() => { setKeyErr(""); setKey(""); setStep("provider"); }}>上一步</button>
+                  <button className="primary" disabled={!key.trim() || saving} onClick={saveKey}>
+                    {saving ? "保存并测试中…" : "保存并继续"}
+                  </button>
+                </>
+              )}
             </div>
           </>
         )}

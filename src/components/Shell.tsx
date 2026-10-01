@@ -10,6 +10,7 @@ import { InstallDialog } from "./InstallDialog";
 import { UninstallDialog } from "./UninstallDialog";
 import { AuditView } from "./AuditView";
 import { ConnectorSettings } from "./ConnectorSettings";
+import { ModelSettings } from "./ModelSettings";
 import { MarketView } from "./MarketView";
 import { NotificationCenter } from "./NotificationCenter";
 import { ApprovalCenter } from "./ApprovalCenter";
@@ -19,7 +20,7 @@ import { SkillsView } from "./SkillsView";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { listApps, type InstalledApp } from "../lib/registry";
 import { installBridgeRelay } from "../lib/bridge";
-import { hasApiKey } from "../lib/keys";
+import { listProviders } from "../lib/providers";
 
 /**
  * C4a 三栏工作台外壳：左类目导航 168px · 中内容区 1fr · 右主助手 288px。
@@ -66,12 +67,15 @@ import { hasApiKey } from "../lib/keys";
  * 与 `MakerInstallConfirm` 同一套"共享导航入口、不合并渲染逻辑、无 pending 项
  * 不渲染任何内容"的处理方式。
  *
- * 首次启动引导（Task12 新增）：挂载时用 `has_api_key` 查 keychain 是否已配置
- * BYOK key（同 P0 `App.tsx` 曾用的检测方式，现收拢到这里）——`hasKey===null`
- * 是加载中过渡态；`hasKey===false`（首次启动/key 被清空）整个替换渲染
- * `OnboardingWizard`（欢迎→配 key→可选装起步应用），不渲染三栏外壳；向导
- * `onComplete` 时把 `hasKey` 置 true，退回渲染下面正常的三栏工作台。已配置
- * key 的老用户 `hasKey` 直接为 true，三栏外壳渲染路径与向导引入前完全一致。
+ * 首次启动引导（Task12 新增；P6-D 改为不限 provider）：挂载时用 `list_providers`
+ * 查是否有任一 provider 已在 keychain 配置 BYOK key——`hasKey===null` 是加载中
+ * 过渡态；`hasKey===false`（首次启动/所有 key 被清空）整个替换渲染
+ * `OnboardingWizard`（欢迎→选服务→配 key 并测试→可选装起步应用），不渲染三栏
+ * 外壳；向导 `onComplete` 时把 `hasKey` 置 true，退回渲染下面正常的三栏工作台。
+ * 已配置任一 key 的老用户 `hasKey` 直接为 true。
+ *
+ * `modelSettings`（P6-D 新增）：「模型与密钥」入口，同 `connectorSettings` 的挂载
+ * 方式，切到 `ModelSettings`（服务与密钥、默认模型、按应用覆盖、用量）。
  * 详见 .superpowers/sdd/task-12-brief.md。
  *
  * 详见 docs/superpowers/specs/2026-07-17-ui-direction-c4a.md §3/§4，
@@ -85,6 +89,7 @@ export function Shell() {
   const [uninstalling, setUninstalling] = useState<string | null>(null);
   const [auditing, setAuditing] = useState(false);
   const [connectorSettings, setConnectorSettings] = useState(false);
+  const [modelSettings, setModelSettings] = useState(false);
   const [market, setMarket] = useState(false);
   const [notifications, setNotifications] = useState(false);
   const [approvals, setApprovals] = useState(false);
@@ -94,7 +99,9 @@ export function Shell() {
   const refresh = () => listApps().then(setApps).catch(() => setApps([]));
   useEffect(() => { refresh(); }, []);
   useEffect(() => {
-    hasApiKey("anthropic").then(setHasKey).catch(() => setHasKey(false));
+    listProviders()
+      .then((ps) => setHasKey(ps.some((p) => p.configured)))
+      .catch(() => setHasKey(false));
   }, []);
 
   useEffect(() => {
@@ -147,6 +154,8 @@ export function Shell() {
           <AuditView onClose={() => setAuditing(false)} />
         ) : connectorSettings ? (
           <ConnectorSettings onClose={() => setConnectorSettings(false)} />
+        ) : modelSettings ? (
+          <ModelSettings onClose={() => setModelSettings(false)} />
         ) : market ? (
           <MarketView onClose={() => setMarket(false)} onInstalled={refresh} />
         ) : notifications ? (
@@ -185,6 +194,7 @@ export function Shell() {
         onInstall={() => setInstalling(true)}
         onAudit={() => setAuditing(true)}
         onConnectorSettings={() => setConnectorSettings(true)}
+        onModelSettings={() => setModelSettings(true)}
         onMarket={() => setMarket(true)}
         onNotifications={() => setNotifications(true)}
         onApprovals={() => setApprovals(true)}

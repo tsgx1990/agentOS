@@ -145,3 +145,14 @@
   color: var(--text-on-accent);
   cursor: not-allowed;
 }
+
+.onboarding-card.onboarding-card-wide {
+  max-width: 760px;
+}
+
+.onboarding-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}

@@ -7,7 +7,7 @@ import { appUsage, type UsageResponse } from "../lib/usage";
  * 右栏（P0 复用为「会话 / 用量面板」）：显示当前会话名 + 主助手 token 用量
  * （`app_usage("main")`，Task17），并常驻「从文件安装应用」入口
  * （`onInstall`）、「查看审计日志」（`onAudit`）、「连接器设置」
- * （`onConnectorSettings`，Task17 新增，`ConnectorSettings` 挂载入口）、
+ * （`onConnectorSettings`，Task17 新增，`ConnectorSettings` 挂载入口）、「模型与密钥」（`onModelSettings`，P6-D，`ModelSettings` 挂载入口）、
  * 「通知中心」（`onNotifications`，Task17 新增，`NotificationCenter` 挂载
  * 入口）、「审批中心」（`onApprovals`，P6-C Task7 新增，`ApprovalCenter` 挂载
  * 入口——待批写调用的分组批量验收 + 放行规则撤销）、「技能」（`onSkills`，P6-B
@@ -28,6 +28,7 @@ export function SessionPanel({
   onInstall,
   onAudit,
   onConnectorSettings,
+  onModelSettings,
   onMarket,
   onNotifications,
   onApprovals,
@@ -37,6 +38,7 @@ export function SessionPanel({
   onInstall?: () => void;
   onAudit?: () => void;
   onConnectorSettings?: () => void;
+  onModelSettings?: () => void;
   onMarket?: () => void;
   onNotifications?: () => void;
   onApprovals?: () => void;
@@ -107,6 +109,10 @@ export function SessionPanel({
 
       {onConnectorSettings && (
         <button className="session-install-btn" onClick={onConnectorSettings}>连接器设置</button>
+      )}
+
+      {onModelSettings && (
+        <button className="session-install-btn" onClick={onModelSettings}>模型与密钥</button>
       )}
 
       {onMarket && (

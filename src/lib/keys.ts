@@ -15,3 +15,8 @@ export function hasApiKey(provider: string): Promise<boolean> {
 export function setApiKey(provider: string, key: string): Promise<void> {
   return invoke("set_api_key", { provider, key });
 }
+
+/** 清除某 provider 的 API Key（`secrets::clear_api_key`）；本来就没有也算成功。 */
+export function clearApiKey(provider: string): Promise<void> {
+  return invoke("clear_api_key", { provider });
+}

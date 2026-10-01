@@ -53,3 +53,18 @@ test("不传 onSkills 时不渲染「技能」入口按钮", async () => {
   render(<SessionPanel />);
   expect(screen.queryByText("技能")).toBeNull();
 });
+
+test("传入 onModelSettings 时渲染「模型与密钥」入口按钮，点击调用回调", async () => {
+  const { fireEvent } = await import("@testing-library/react");
+  invokeMock.mockResolvedValue({ input: 0, output: 0, cost: 0 });
+  const onModelSettings = vi.fn();
+  render(<SessionPanel onModelSettings={onModelSettings} />);
+  fireEvent.click(screen.getByText("模型与密钥"));
+  expect(onModelSettings).toHaveBeenCalledTimes(1);
+});
+
+test("不传 onModelSettings 时不渲染「模型与密钥」入口按钮", async () => {
+  invokeMock.mockResolvedValue({ input: 0, output: 0, cost: 0 });
+  render(<SessionPanel />);
+  expect(screen.queryByText("模型与密钥")).toBeNull();
+});
